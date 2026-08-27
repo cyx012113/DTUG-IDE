@@ -1,15 +1,57 @@
+# ===== Python 通用 =====
 __pycache__/
 *.py[cod]
 *.egg-info/
 .pytest_cache/
 .ruff_cache/
+.mypy_cache/
+.tox/
+htmlcov/
+.coverage
+.coverage.*
+coverage.xml
+
+# ===== 虚拟环境 =====
 .venv/
 venv/
+env/
+ENV/
+
+# ===== 构建 / 打包产物（PyInstaller onedir） =====
 build/
 build_*/
 dist/
 release/
+_internal/
+*.spec.bak
+
+# ===== 运行时 / 临时文件 =====
 previews/
 _trash/
+release/_trash/
 *.log
 DTUG_IDE_crash.log
+
+# ===== 编辑器 / IDE =====
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# ===== 操作系统 =====
+.DS_Store
+Thumbs.db
+Desktop.ini
+
+# ===== 内部工具数据（不提交云端） =====
+.agent/
+.codex/
+.workbuddy/
+
+# ===== 说明 =====
+# 以下文件刻意保留（不忽略）：
+#   dtug_ide/            源码包
+#   packaging/DTUG-IDE.spec   打包配置
+#   packaging/version_info.txt / THIRD_PARTY_NOTICES.md
+#   docs/images/dtug-ide.ico  应用图标
+#   legacy/              旧 Web 版参考代码
