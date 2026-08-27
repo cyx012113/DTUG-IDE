@@ -1,0 +1,1066 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>DTUG IDE judge</title>
+    <link rel="icon" type="image/x-icon" href="/static/favicon.ico" />
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/codemirror.min.css" />
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/theme/monokai.min.css" />
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/codemirror.min.js">
+    </script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/mode/clike/clike.min.js">
+    </script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/addon/edit/matchbrackets.min.js">
+    </script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/addon/edit/closebrackets.min.js">
+    </script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/addon/selection/active-line.min.js">
+    </script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/addon/hint/show-hint.min.js">
+    </script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/addon/hint/anyword-hint.min.js">
+    </script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/addon/hint/clike-hint.min.js">
+    </script>
+    <style>
+        /* ===== 复用暗黑风格 ===== */
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        :root {
+            --bg-primary: #0b0e17;
+            --bg-secondary: #111827;
+            --bg-card: #1a2332;
+            --bg-editor: #0d1117;
+            --border-color: #2a3a5a;
+            --text-primary: #e8edf5;
+            --text-secondary: #94a9c9;
+            --text-muted: #5a7a9a;
+            --accent-blue: #4f9cf7;
+            --accent-green: #34d399;
+            --accent-orange: #fb923c;
+            --accent-red: #f87171;
+            --radius: 12px;
+            --radius-sm: 8px;
+            --transition: 0.25s cubic-bezier(0.4, 0, 0.2, 1);
+        }
+        html,
+        body {
+            height: 100%;
+            font-family: 'Inter', 'Segoe UI', system-ui, sans-serif;
+            background: var(--bg-primary);
+            color: var(--text-primary);
+            overflow: hidden;
+        }
+        ::-webkit-scrollbar {
+            width: 6px;
+            height: 6px;
+        }
+        ::-webkit-scrollbar-track {
+            background: var(--bg-secondary);
+        }
+        ::-webkit-scrollbar-thumb {
+            background: var(--border-color);
+            border-radius: 8px;
+        }
+        ::-webkit-scrollbar-thumb:hover {
+            background: var(--accent-blue);
+        }
+
+        #app {
+            display: flex;
+            flex-direction: column;
+            height: 100vh;
+            background: var(--bg-primary);
+            position: relative;
+            overflow: hidden;
+        }
+
+        /* ===== 导航栏 ===== */
+        .navbar {
+            position: relative;
+            z-index: 10;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding: 8px 20px;
+            background: rgba(17, 24, 39, 0.85);
+            backdrop-filter: blur(16px);
+            border-bottom: 1px solid var(--border-color);
+            flex-shrink: 0;
+            flex-wrap: wrap;
+            gap: 6px;
+        }
+        .navbar-brand {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            font-size: 18px;
+            font-weight: 700;
+            background: linear-gradient(135deg, var(--accent-blue), #a78bfa);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            user-select: none;
+        }
+        .navbar-brand svg {
+            width: 24px;
+            height: 24px;
+            fill: none;
+            stroke: var(--accent-blue);
+            stroke-width: 2;
+            -webkit-text-fill-color: initial;
+        }
+        .navbar-brand .badge {
+            font-size: 10px;
+            font-weight: 500;
+            -webkit-text-fill-color: var(--text-secondary);
+            background: var(--bg-card);
+            padding: 2px 10px;
+            border-radius: 20px;
+            border: 1px solid var(--border-color);
+            opacity: 0.8;
+        }
+        .navbar-actions {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            flex-wrap: wrap;
+        }
+        .btn {
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            padding: 6px 14px;
+            border: none;
+            border-radius: var(--radius-sm);
+            font-size: 12px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: var(--transition);
+            background: var(--bg-card);
+            color: var(--text-secondary);
+            border: 1px solid transparent;
+            white-space: nowrap;
+        }
+        .btn:hover {
+            transform: translateY(-1px);
+            box-shadow: var(--shadow-glow);
+        }
+        .btn:active {
+            transform: scale(0.97);
+        }
+        .btn-success {
+            background: linear-gradient(135deg, var(--accent-green), #22d3ee);
+            color: #0b0e17;
+            box-shadow: 0 4px 15px rgba(52, 211, 153, 0.2);
+        }
+        .btn-success:hover {
+            box-shadow: 0 6px 25px rgba(52, 211, 153, 0.35);
+            transform: translateY(-2px);
+        }
+        .btn-danger {
+            background: rgba(248, 81, 73, 0.15);
+            color: var(--accent-red);
+            border: 1px solid rgba(248, 81, 73, 0.2);
+        }
+        .btn-danger:hover {
+            background: rgba(248, 81, 73, 0.25);
+            border-color: rgba(248, 81, 73, 0.4);
+        }
+        .btn-outline {
+            background: transparent;
+            border: 1px solid var(--border-color);
+            color: var(--text-secondary);
+        }
+        .btn-outline:hover {
+            border-color: var(--accent-blue);
+            color: var(--text-primary);
+            background: rgba(79, 156, 247, 0.06);
+        }
+        .btn-ghost {
+            background: transparent;
+            color: var(--text-muted);
+            padding: 6px 10px;
+        }
+        .btn-ghost:hover {
+            color: var(--text-primary);
+            background: rgba(255, 255, 255, 0.04);
+        }
+        .btn-icon {
+            padding: 6px 8px;
+            font-size: 14px;
+        }
+        .btn-sm {
+            padding: 2px 8px;
+            font-size: 11px;
+        }
+        .kbd {
+            display: inline-block;
+            padding: 0 6px;
+            font-size: 10px;
+            font-weight: 600;
+            color: var(--text-muted);
+            background: rgba(255, 255, 255, 0.04);
+            border-radius: 4px;
+            border: 1px solid var(--border-color);
+            font-family: inherit;
+            line-height: 1.6;
+        }
+
+        /* ===== 主体布局 ===== */
+        .main-layout {
+            display: flex;
+            flex: 1;
+            min-height: 0;
+            padding: 12px;
+            gap: 12px;
+        }
+
+        /* 左侧：编辑器 */
+        .editor-area {
+            flex: 1;
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+            min-width: 0;
+        }
+        .editor-wrapper {
+            flex: 1;
+            min-height: 0;
+            background: var(--bg-editor);
+            border-radius: var(--radius);
+            border: 1px solid var(--border-color);
+            overflow: hidden;
+            position: relative;
+            box-shadow: var(--shadow-glow);
+            transition: border-color var(--transition);
+        }
+        .editor-wrapper:focus-within {
+            border-color: rgba(79, 156, 247, 0.4);
+        }
+        .CodeMirror {
+            height: 100% !important;
+            font-size: 14px;
+            font-family: 'JetBrains Mono', 'Fira Code', monospace;
+            line-height: 1.7;
+            background: var(--bg-editor) !important;
+            padding: 4px 0;
+        }
+        .CodeMirror-gutters {
+            background: var(--bg-editor) !important;
+            border-right: 1px solid rgba(42, 58, 90, 0.3) !important;
+        }
+        .CodeMirror-linenumber {
+            color: var(--text-muted) !important;
+            padding: 0 12px !important;
+            opacity: 0.6;
+        }
+        .CodeMirror-cursor {
+            border-left: 2px solid var(--accent-blue) !important;
+        }
+        .CodeMirror-selected {
+            background: rgba(79, 156, 247, 0.15) !important;
+        }
+        .CodeMirror-activeline-background {
+            background: rgba(255, 255, 255, 0.02) !important;
+        }
+        .cm-s-monokai .cm-keyword {
+            color: #f92672 !important;
+        }
+        .cm-s-monokai .cm-atom {
+            color: #ae81ff !important;
+        }
+        .cm-s-monokai .cm-number {
+            color: #ae81ff !important;
+        }
+        .cm-s-monokai .cm-def {
+            color: #66d9ef !important;
+        }
+        .cm-s-monokai .cm-variable {
+            color: #f8f8f2 !important;
+        }
+        .cm-s-monokai .cm-operator {
+            color: #f92672 !important;
+        }
+        .cm-s-monokai .cm-comment {
+            color: #75715e !important;
+            font-style: italic;
+        }
+        .cm-s-monokai .cm-string {
+            color: #e6db74 !important;
+        }
+        .cm-s-monokai .cm-builtin {
+            color: #66d9ef !important;
+        }
+
+        /* 右侧：测评面板 */
+        .judge-panel {
+            width: 340px;
+            flex-shrink: 0;
+            background: var(--bg-secondary);
+            border-radius: var(--radius);
+            border: 1px solid var(--border-color);
+            display: flex;
+            flex-direction: column;
+            overflow: hidden;
+        }
+        .judge-panel .panel-header {
+            padding: 10px 16px;
+            border-bottom: 1px solid var(--border-color);
+            font-weight: 600;
+            font-size: 14px;
+            color: var(--text-primary);
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            flex-shrink: 0;
+        }
+        .judge-panel .panel-body {
+            flex: 1;
+            overflow-y: auto;
+            padding: 12px 16px;
+            display: flex;
+            flex-direction: column;
+            gap: 12px;
+        }
+
+        .file-import-area {
+            display: flex;
+            gap: 8px;
+            flex-wrap: wrap;
+        }
+        .file-import-area .btn {
+            flex: 1;
+        }
+
+        .limit-settings {
+            display: flex;
+            gap: 12px;
+            align-items: center;
+        }
+        .limit-settings label {
+            font-size: 13px;
+            color: var(--text-secondary);
+        }
+        .limit-settings input {
+            width: 70px;
+            background: var(--bg-editor);
+            color: var(--text-primary);
+            border: 1px solid var(--border-color);
+            border-radius: var(--radius-sm);
+            padding: 4px 8px;
+            font-size: 13px;
+            outline: none;
+        }
+        .limit-settings input:focus {
+            border-color: var(--accent-blue);
+        }
+
+        .test-list {
+            flex: 1;
+            overflow-y: auto;
+            display: flex;
+            flex-direction: column;
+            gap: 4px;
+            margin-top: 4px;
+        }
+        .test-item {
+            background: var(--bg-card);
+            border-radius: var(--radius-sm);
+            padding: 6px 10px;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            font-size: 13px;
+            border-left: 3px solid var(--border-color);
+            transition: var(--transition);
+        }
+        .test-item .name {
+            flex: 1;
+            color: var(--text-secondary);
+        }
+        .test-item .status {
+            font-weight: 600;
+            padding: 0 8px;
+        }
+        .test-item .status.AC {
+            color: var(--accent-green);
+        }
+        .test-item .status.WA {
+            color: var(--accent-red);
+        }
+        .test-item .status.TLE {
+            color: var(--accent-orange);
+        }
+        .test-item .status.MLE {
+            color: #f472b6;
+        }
+        .test-item .status.RE {
+            color: #f87171;
+        }
+        .test-item .status.CE {
+            color: #94a3b8;
+        }
+        .test-item .detail {
+            font-size: 11px;
+            color: var(--text-muted);
+            margin-left: 8px;
+        }
+
+        .result-summary {
+            padding: 8px;
+            background: rgba(0, 0, 0, 0.2);
+            border-radius: var(--radius-sm);
+            text-align: center;
+            font-size: 14px;
+            font-weight: 500;
+        }
+
+        /* 状态栏 */
+        .statusbar {
+            flex-shrink: 0;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding: 2px 20px;
+            background: rgba(17, 24, 39, 0.6);
+            border-top: 1px solid var(--border-color);
+            font-size: 11px;
+            color: var(--text-muted);
+            backdrop-filter: blur(8px);
+            z-index: 5;
+            min-height: 26px;
+        }
+        .statusbar .left,
+        .statusbar .right {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+        }
+        .statusbar .sep {
+            opacity: 0.2;
+        }
+
+        .loading-overlay {
+            position: absolute;
+            inset: 0;
+            background: rgba(11, 14, 23, 0.85);
+            backdrop-filter: blur(4px);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            z-index: 50;
+            border-radius: var(--radius);
+            opacity: 0;
+            pointer-events: none;
+            transition: opacity 0.4s;
+        }
+        .loading-overlay.active {
+            opacity: 1;
+            pointer-events: auto;
+        }
+        .loading-overlay .spinner {
+            width: 44px;
+            height: 44px;
+            border: 3px solid var(--border-color);
+            border-top: 3px solid var(--accent-blue);
+            border-radius: 50%;
+            animation: spin 0.8s linear infinite;
+        }
+        @keyframes spin {
+            to {
+                transform: rotate(360deg);
+            }
+        }
+
+        .toast-container {
+            position: fixed;
+            bottom: 80px;
+            right: 24px;
+            z-index: 999;
+            display: flex;
+            flex-direction: column;
+            gap: 10px;
+            pointer-events: none;
+        }
+        .toast {
+            padding: 10px 20px;
+            background: var(--bg-card);
+            border: 1px solid var(--border-color);
+            border-radius: var(--radius-sm);
+            backdrop-filter: blur(16px);
+            box-shadow: 0 20px 60px rgba(0, 0, 0, 0.5);
+            font-size: 13px;
+            color: var(--text-primary);
+            pointer-events: auto;
+            animation: slideIn 0.3s ease-out;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            min-width: 180px;
+        }
+        .toast.success {
+            border-left: 3px solid var(--accent-green);
+        }
+        .toast.error {
+            border-left: 3px solid #f87171;
+        }
+        .toast.info {
+            border-left: 3px solid var(--accent-blue);
+        }
+        @keyframes slideIn {
+            from {
+                opacity: 0;
+                transform: translateX(30px) scale(0.96);
+            }
+            to {
+                opacity: 1;
+                transform: translateX(0) scale(1);
+            }
+        }
+
+        @media (max-width: 768px) {
+            .main-layout {
+                flex-direction: column;
+            }
+            .judge-panel {
+                width: 100%;
+                height: 300px;
+            }
+        }
+    </style>
+</head>
+<body>
+
+    <div id="app">
+        <!-- 导航栏 -->
+        <header class="navbar">
+            <div class="navbar-brand">
+                <svg viewBox="0 0 24 24" stroke-linecap="round" stroke-linejoin="round">
+                    <polyline points="4 7 4 4 20 4 20 7" />
+                    <line x1="9" y1="20" x2="15" y2="20" />
+                    <line x1="12" y1="4" x2="12" y2="20" />
+                </svg>
+                <span>DTUG IDE judge</span>
+                <span class="badge">在线测评</span>
+            </div>
+
+            <div class="navbar-actions">
+                <a href="/" class="btn btn-outline btn-icon" title="回到编辑器"><span>⌨️</span><span class="btn-text">编辑器</span></a>
+                <button class="btn btn-outline btn-icon" id="loadDefaultCodeBtn" title="加载示例代码"><span>📄</span><span class="btn-text">示例代码</span></button>
+            </div>
+        </header>
+
+        <!-- 主体 -->
+        <div class="main-layout">
+            <!-- 左侧：代码编辑器 -->
+            <div class="editor-area">
+                <div class="editor-wrapper">
+                    <textarea id="codeEditor"></textarea>
+                    <div class="loading-overlay" id="loadingOverlay"><div class="spinner"></div></div>
+                </div>
+                <div style="display:flex;gap:8px;flex-shrink:0;">
+                    <button class="btn btn-success" id="runJudgeBtn"><span>▶</span> 开始评测</button>
+                    <button class="btn btn-outline" id="clearConsoleBtn"><span>✕</span> 清空输出</button>
+                </div>
+            </div>
+
+            <!-- 右侧：测评面板 -->
+            <div class="judge-panel">
+                <div class="panel-header">
+                    <span>📂 测评控制台</span>
+                </div>
+                <div class="panel-body">
+                    <!-- 导入文件夹 -->
+                    <div class="file-import-area">
+                        <button class="btn btn-outline" id="importFolderBtn">📁 导入文件夹</button>
+                        <button class="btn btn-outline" id="clearTestsBtn">🗑️ 清空</button>
+                        <span id="fileCount" style="font-size:12px;color:var(--text-muted);align-self:center;">0 个样例</span>
+                    </div>
+
+                    <!-- 限制设置 -->
+                    <div class="limit-settings">
+                        <label>⏱ 时间限制 (s)</label>
+                        <input type="number" id="timeLimitInput" value="1.0" step="0.1" min="0.1" />
+                        <label>💾 空间限制 (MB)</label>
+                        <input type="number" id="memoryLimitInput" value="256" step="1" min="1" />
+                    </div>
+
+                    <!-- 样例列表 -->
+                    <div class="test-list" id="testList">
+                        <div style="color:var(--text-muted);font-size:13px;text-align:center;padding:20px 0;">请导入测试文件夹</div>
+                    </div>
+
+                    <!-- 结果汇总 -->
+                    <div class="result-summary" id="resultSummary">等待评测</div>
+                </div>
+            </div>
+        </div>
+
+        <!-- 状态栏 -->
+        <div class="statusbar">
+            <div class="left">
+                <span id="statusCursor">行 1 · 列 1</span>
+                <span class="sep">|</span>
+                <span id="statusFileName">未命名</span>
+                <span class="sep">|</span>
+                <span id="statusReady">就绪</span>
+            </div>
+            <div class="right">
+                <span id="statusChars">0 字符</span>
+                <span class="sep">|</span>
+                <span id="statusLines">0 行</span>
+            </div>
+        </div>
+    </div>
+
+    <div class="toast-container" id="toastContainer"></div>
+
+    <script>
+        (function() {
+            'use strict';
+
+            // ============================================================
+            //  DOM 引用
+            // ============================================================
+            const textarea = document.getElementById('codeEditor');
+            const consoleBody = document.getElementById('consoleBody');
+            const statusCursor = document.getElementById('statusCursor');
+            const statusChars = document.getElementById('statusChars');
+            const statusLines = document.getElementById('statusLines');
+            const statusReady = document.getElementById('statusReady');
+            const statusFileName = document.getElementById('statusFileName');
+            const loadingOverlay = document.getElementById('loadingOverlay');
+            const runJudgeBtn = document.getElementById('runJudgeBtn');
+            const clearConsoleBtn = document.getElementById('clearConsoleBtn');
+            const importFolderBtn = document.getElementById('importFolderBtn');
+            const clearTestsBtn = document.getElementById('clearTestsBtn');
+            const testList = document.getElementById('testList');
+            const resultSummary = document.getElementById('resultSummary');
+            const fileCount = document.getElementById('fileCount');
+            const timeLimitInput = document.getElementById('timeLimitInput');
+            const memoryLimitInput = document.getElementById('memoryLimitInput');
+            const loadDefaultCodeBtn = document.getElementById('loadDefaultCodeBtn');
+            const toastContainer = document.getElementById('toastContainer');
+
+            // ============================================================
+            //  编辑器初始化
+            // ============================================================
+            let editor = null;
+            let testCases = []; // [{ name, input, expected }]
+
+            function initEditor() {
+                editor = CodeMirror.fromTextArea(textarea, {
+                    mode: 'text/x-c++src',
+                    theme: 'monokai',
+                    lineNumbers: true,
+                    matchBrackets: true,
+                    autoCloseBrackets: true,
+                    styleActiveLine: true,
+                    indentUnit: 4,
+                    tabSize: 4,
+                    extraKeys: {
+                        'Ctrl-S': function(cm) { cm.save(); showToast('💾', '代码已保存', 'info'); return false; },
+                        'Cmd-S': function(cm) { cm.save(); showToast('💾', '代码已保存', 'info'); return false; },
+                        'Ctrl-Enter': function(cm) { runJudge(); return false; },
+                        'Cmd-Enter': function(cm) { runJudge(); return false; }
+                    },
+                    hintOptions: {
+                        completeSingle: false,
+                        hint: CodeMirror.hint.clike
+                    },
+                    viewportMargin: Infinity,
+                });
+
+                editor.on('inputRead', function(cm, change) {
+                    if (cm.getMode().name !== 'clike') return;
+                    var cur = cm.getCursor();
+                    var token = cm.getTokenAt(cur);
+                    if (token.type && (token.type.indexOf('comment') !== -1 || token.type.indexOf('string') !== -1)) {
+                        return;
+                    }
+                    if (change.text.length === 1 && /[\s\W]/.test(change.text[0])) {
+                        return;
+                    }
+                    clearTimeout(cm._hintTimer);
+                    cm._hintTimer = setTimeout(function() {
+                        cm.showHint({ completeSingle: false });
+                    }, 50);
+                });
+
+                editor.on('cursorActivity', function() {
+                    const pos = editor.getCursor();
+                    statusCursor.textContent = `行 ${pos.line + 1} · 列 ${pos.ch + 1}`;
+                    updateStatusStats();
+                });
+
+                editor.on('change', function() {
+                    updateStatusStats();
+                });
+
+                // 默认代码
+                const defaultCode = `#include <iostream>\nusing namespace std;\n\nint main() {\n    int a, b;\n    cin >> a >> b;\n    cout << a + b << endl;\n    return 0;\n}`;
+                editor.setValue(defaultCode);
+                setTimeout(() => { editor.refresh();
+                    editor.focus(); }, 100);
+
+                updateStatusStats();
+                statusFileName.textContent = '未命名.cpp';
+                statusReady.textContent = '就绪';
+            }
+
+            function updateStatusStats() {
+                const content = editor.getValue();
+                const lines = content.split('\n');
+                statusChars.textContent = `${content.length} 字符`;
+                statusLines.textContent = `${lines.length} 行`;
+            }
+
+            // ============================================================
+            //  导入文件夹
+            // ============================================================
+            async function importFolder() {
+                try {
+                    let dirHandle;
+                    // 使用 showDirectoryPicker (Chrome)
+                    if ('showDirectoryPicker' in window) {
+                        dirHandle = await window.showDirectoryPicker();
+                    } else {
+                        // 降级: 使用 webkitdirectory input
+                        showToast('⚠️', '当前浏览器不支持 showDirectoryPicker，请使用 Chrome/Edge', 'error');
+                        return;
+                    }
+
+                    const files = [];
+                    const entries = [];
+                    for await (const entry of dirHandle.values()) {
+                        if (entry.kind === 'file') {
+                            entries.push(entry);
+                        }
+                    }
+
+                    // 匹配 .in / .ans / .out
+                    const fileMap = {};
+                    for (const entry of entries) {
+                        const name = entry.name;
+                        const ext = name.split('.').pop().toLowerCase();
+                        const base = name.slice(0, name.lastIndexOf('.'));
+                        if (!fileMap[base]) fileMap[base] = {};
+                        if (ext === 'in') {
+                            const file = await entry.getFile();
+                            const content = await file.text();
+                            fileMap[base].input = content;
+                        } else if (ext === 'ans' || ext === 'out') {
+                            const file = await entry.getFile();
+                            const content = await file.text();
+                            fileMap[base].expected = content;
+                        }
+                    }
+
+                    testCases = [];
+                    for (const [base, data] of Object.entries(fileMap)) {
+                        if (data.input !== undefined && data.expected !== undefined) {
+                            testCases.push({
+                                name: base,
+                                input: data.input,
+                                expected: data.expected
+                            });
+                        }
+                    }
+
+                    if (testCases.length === 0) {
+                        showToast('⚠️', '未找到匹配的 .in 和 .ans/.out 文件', 'error');
+                        return;
+                    }
+
+                    renderTestList();
+                    showToast('✅', `导入 ${testCases.length} 个样例`, 'success');
+                } catch (err) {
+                    if (err.name !== 'AbortError') {
+                        showToast('❌', '导入失败: ' + err.message, 'error');
+                    }
+                }
+            }
+
+            // 降级：使用 input webkitdirectory（备选）
+            function setupFallbackImport() {
+                const input = document.createElement('input');
+                input.type = 'file';
+                input.webkitdirectory = true;
+                input.multiple = true;
+                input.style.display = 'none';
+                document.body.appendChild(input);
+                input.addEventListener('change', function(e) {
+                    const filesList = e.target.files;
+                    if (!filesList || filesList.length === 0) return;
+                    const fileMap = {};
+                    for (let f of filesList) {
+                        const name = f.name;
+                        const ext = name.split('.').pop().toLowerCase();
+                        const base = name.slice(0, name.lastIndexOf('.'));
+                        if (!fileMap[base]) fileMap[base] = {};
+                        if (ext === 'in') {
+                            const reader = new FileReader();
+                            reader.onload = function(ev) {
+                                fileMap[base].input = ev.target.result;
+                                checkComplete();
+                            };
+                            reader.readAsText(f);
+                        } else if (ext === 'ans' || ext === 'out') {
+                            const reader = new FileReader();
+                            reader.onload = function(ev) {
+                                fileMap[base].expected = ev.target.result;
+                                checkComplete();
+                            };
+                            reader.readAsText(f);
+                        }
+                    }
+
+                    let checked = false;
+
+                    function checkComplete() {
+                        if (checked) return;
+                        // 等待所有文件读取完成
+                        const allLoaded = Object.values(fileMap).every(d => d.input !== undefined && d.expected !==
+                        undefined);
+                        if (allLoaded) {
+                            checked = true;
+                            testCases = [];
+                            for (const [base, data] of Object.entries(fileMap)) {
+                                testCases.push({ name: base, input: data.input, expected: data.expected });
+                            }
+                            if (testCases.length > 0) {
+                                renderTestList();
+                                showToast('✅', `导入 ${testCases.length} 个样例`, 'success');
+                            } else {
+                                showToast('⚠️', '未找到匹配的 .in 和 .ans/.out', 'error');
+                            }
+                        }
+                    }
+                    input.value = '';
+                });
+
+                // 覆盖 importFolder 函数，当 showDirectoryPicker 不可用时使用 input
+                const originalImport = importFolder;
+                importFolder = function() {
+                    if ('showDirectoryPicker' in window) {
+                        originalImport.call(this);
+                    } else {
+                        input.click();
+                    }
+                };
+            }
+
+            // ============================================================
+            //  渲染样例列表
+            // ============================================================
+            function renderTestList() {
+                testList.innerHTML = '';
+                if (testCases.length === 0) {
+                    testList.innerHTML = `<div style="color:var(--text-muted);font-size:13px;text-align:center;padding:20px 0;">暂无样例</div>`;
+                    fileCount.textContent = '0 个样例';
+                    resultSummary.textContent = '等待评测';
+                    return;
+                }
+
+                testCases.forEach((tc, idx) => {
+                    const div = document.createElement('div');
+                    div.className = 'test-item';
+                    div.innerHTML = `
+                        <span class="name">${tc.name}</span>
+                        <span class="status" id="status-${idx}">⏳</span>
+                        <span class="detail" id="detail-${idx}"></span>
+                    `;
+                    testList.appendChild(div);
+                });
+                fileCount.textContent = `${testCases.length} 个样例`;
+                resultSummary.textContent = '就绪，点击「开始评测」';
+                // 重置状态
+                testCases.forEach((_, idx) => {
+                    const statusEl = document.getElementById(`status-${idx}`);
+                    if (statusEl) { statusEl.textContent = '⏳';
+                        statusEl.className = 'status'; }
+                    const detailEl = document.getElementById(`detail-${idx}`);
+                    if (detailEl) detailEl.textContent = '';
+                });
+            }
+
+            // ============================================================
+            //  评测执行
+            // ============================================================
+            async function runJudge() {
+                const code = editor.getValue();
+                if (!code.trim()) {
+                    showToast('⚠️', '代码为空', 'error');
+                    return;
+                }
+                if (testCases.length === 0) {
+                    showToast('⚠️', '请先导入测试样例', 'error');
+                    return;
+                }
+
+                const timeLimit = parseFloat(timeLimitInput.value) || 1.0;
+                const memoryLimit = parseFloat(memoryLimitInput.value) || 256;
+
+                // 准备测试数据
+                const tests = testCases.map(tc => ({ input: tc.input, expected: tc.expected }));
+
+                // 显示加载
+                loadingOverlay.classList.add('active');
+                setStatus('running', '评测中...');
+
+                try {
+                    const response = await fetch('/judge', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({
+                            code: code,
+                            tests: tests,
+                            time_limit: timeLimit,
+                            memory_limit: memoryLimit
+                        })
+                    });
+                    const data = await response.json();
+
+                    if (data.status === 'compile_error') {
+                        showToast('❌', '编译错误 (CE)', 'error');
+                        resultSummary.textContent = '编译错误 (CE)';
+                        setStatus('error', '编译错误');
+                        // 显示编译信息
+                        testCases.forEach((_, idx) => {
+                            const statusEl = document.getElementById(`status-${idx}`);
+                            if (statusEl) { statusEl.textContent = 'CE';
+                                statusEl.className = 'status CE'; }
+                            const detailEl = document.getElementById(`detail-${idx}`);
+                            if (detailEl) detailEl.textContent = '';
+                        });
+                        loadingOverlay.classList.remove('active');
+                        return;
+                    }
+
+                    const results = data.results;
+                    let acCount = 0;
+                    let total = results.length;
+
+                    results.forEach((res, idx) => {
+                        const statusEl = document.getElementById(`status-${idx}`);
+                        const detailEl = document.getElementById(`detail-${idx}`);
+                        if (statusEl) {
+                            statusEl.textContent = res.status;
+                            statusEl.className = `status ${res.status}`;
+                        }
+                        if (detailEl) {
+                            let detailText = `时间 ${res.time.toFixed(3)}s / 内存 ${res.memory.toFixed(1)}MB`;
+                            if (res.status === 'WA' || res.status === 'RE') {
+                                // 可显示输出
+                                detailText += ` 输出: ${res.output.slice(0, 30)}${res.output.length>30?'...':''}`;
+                            }
+                            detailEl.textContent = detailText;
+                        }
+                        if (res.status === 'AC') acCount++;
+                    });
+
+                    const passRate = (acCount / total * 100).toFixed(1);
+                    resultSummary.textContent = `AC ${acCount}/${total} (${passRate}%)`;
+                    if (acCount === total) {
+                        showToast('✅', '全部通过!', 'success');
+                        setStatus('success', '全部通过');
+                    } else {
+                        showToast('⚠️', `通过 ${acCount}/${total}`, 'error');
+                        setStatus('error', `${acCount}/${total} 通过`);
+                    }
+                } catch (err) {
+                    showToast('❌', '请求失败: ' + err.message, 'error');
+                    resultSummary.textContent = '评测失败';
+                    setStatus('error', '连接失败');
+                } finally {
+                    loadingOverlay.classList.remove('active');
+                }
+            }
+
+            // ============================================================
+            //  清空测试
+            // ============================================================
+            function clearTests() {
+                testCases = [];
+                renderTestList();
+                showToast('🗑️', '已清空所有样例', 'info');
+            }
+
+            // ============================================================
+            //  状态 & Toast
+            // ============================================================
+            function setStatus(state, msg) {
+                statusReady.textContent = msg;
+            }
+
+            function showToast(icon, message, type) {
+                type = type || 'info';
+                const container = toastContainer;
+                const toast = document.createElement('div');
+                toast.className = `toast ${type}`;
+                toast.innerHTML = `<span class="icon">${icon}</span><span>${message}</span>`;
+                container.appendChild(toast);
+                setTimeout(() => {
+                    toast.style.opacity = '0';
+                    toast.style.transform = 'translateX(30px) scale(0.96)';
+                    toast.style.transition = '0.3s ease-out';
+                    setTimeout(() => toast.remove(), 300);
+                }, 3000);
+            }
+
+            // ============================================================
+            //  加载示例代码
+            // ============================================================
+            function loadDefaultCode() {
+                const code = `#include <iostream>\nusing namespace std;\n\nint main() {\n    int a, b;\n    cin >> a >> b;\n    cout << a + b << endl;\n    return 0;\n}`;
+                editor.setValue(code);
+                editor.refresh();
+                showToast('📄', '已加载示例代码 (a+b)', 'info');
+            }
+
+            // ============================================================
+            //  事件绑定
+            // ============================================================
+            function initEvents() {
+                runJudgeBtn.addEventListener('click', runJudge);
+                clearConsoleBtn.addEventListener('click', function() {
+                    // 清空输出（仅清除显示状态，无控制台）
+                    testCases.forEach((_, idx) => {
+                        const statusEl = document.getElementById(`status-${idx}`);
+                        if (statusEl) { statusEl.textContent = '⏳';
+                            statusEl.className = 'status'; }
+                        const detailEl = document.getElementById(`detail-${idx}`);
+                        if (detailEl) detailEl.textContent = '';
+                    });
+                    resultSummary.textContent = '已清空结果';
+                    showToast('🧹', '结果已清空', 'info');
+                });
+                importFolderBtn.addEventListener('click', importFolder);
+                clearTestsBtn.addEventListener('click', clearTests);
+                loadDefaultCodeBtn.addEventListener('click', loadDefaultCode);
+            }
+
+            // ============================================================
+            //  初始化
+            // ============================================================
+            function init() {
+                setupFallbackImport();
+                initEditor();
+                initEvents();
+                renderTestList();
+                setStatus('idle', '就绪');
+                showToast('🚀', '样例测评已就绪', 'info');
+            }
+
+            if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', init);
+            else init();
+
+        })();
+    </script>
+
+</body>
+</html>

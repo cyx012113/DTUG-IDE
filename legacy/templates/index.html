@@ -1,0 +1,2249 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>DTUG IDE</title>
+    <link rel="icon" type="image/x-icon" href="/static/favicon.ico" />
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/codemirror.min.css" />
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/theme/monokai.min.css" />
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/addon/hint/show-hint.min.css" />
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/codemirror.min.js">
+    </script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/mode/clike/clike.min.js">
+    </script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/addon/edit/matchbrackets.min.js">
+    </script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/addon/edit/closebrackets.min.js">
+    </script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/addon/selection/active-line.min.js">
+    </script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/addon/hint/show-hint.min.js">
+    </script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/addon/hint/anyword-hint.min.js">
+    </script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/addon/hint/clike-hint.min.js">
+    </script>
+    <style>
+        /* ===== 全局重置 ===== */
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        :root {
+            --bg-primary: #0b0e17;
+            --bg-secondary: #111827;
+            --bg-card: #1a2332;
+            --bg-editor: #0d1117;
+            --border-color: #2a3a5a;
+            --text-primary: #e8edf5;
+            --text-secondary: #94a9c9;
+            --text-muted: #5a7a9a;
+            --accent-blue: #4f9cf7;
+            --accent-green: #34d399;
+            --accent-orange: #fb923c;
+            --accent-red: #f87171;
+            --shadow-glow: 0 0 30px rgba(79, 156, 247, 0.08);
+            --radius: 12px;
+            --radius-sm: 8px;
+            --transition: 0.25s cubic-bezier(0.4, 0, 0.2, 1);
+            --sidebar-width: 280px;
+        }
+        html,
+        body {
+            height: 100%;
+            font-family: 'Inter', 'Segoe UI', system-ui, sans-serif;
+            background: var(--bg-primary);
+            color: var(--text-primary);
+            overflow: hidden;
+        }
+        ::-webkit-scrollbar {
+            width: 6px;
+            height: 6px;
+        }
+        ::-webkit-scrollbar-track {
+            background: var(--bg-secondary);
+        }
+        ::-webkit-scrollbar-thumb {
+            background: var(--border-color);
+            border-radius: 8px;
+        }
+        ::-webkit-scrollbar-thumb:hover {
+            background: var(--accent-blue);
+        }
+
+        #app {
+            display: flex;
+            flex-direction: column;
+            height: 100vh;
+            background: var(--bg-primary);
+            position: relative;
+            overflow: hidden;
+        }
+
+        /* ===== 导航栏 ===== */
+        .navbar {
+            position: relative;
+            z-index: 10;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding: 8px 20px;
+            background: rgba(17, 24, 39, 0.85);
+            backdrop-filter: blur(16px);
+            border-bottom: 1px solid var(--border-color);
+            flex-shrink: 0;
+            flex-wrap: wrap;
+            gap: 6px;
+        }
+        .navbar-brand {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            font-size: 18px;
+            font-weight: 700;
+            background: linear-gradient(135deg, var(--accent-blue), #a78bfa);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            user-select: none;
+        }
+        .navbar-brand svg {
+            width: 24px;
+            height: 24px;
+            fill: none;
+            stroke: var(--accent-blue);
+            stroke-width: 2;
+            -webkit-text-fill-color: initial;
+        }
+        .navbar-brand .badge {
+            font-size: 10px;
+            font-weight: 500;
+            -webkit-text-fill-color: var(--text-secondary);
+            background: var(--bg-card);
+            padding: 2px 10px;
+            border-radius: 20px;
+            border: 1px solid var(--border-color);
+            opacity: 0.8;
+        }
+        .navbar-actions {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            flex-wrap: wrap;
+        }
+        .btn {
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            padding: 6px 14px;
+            border: none;
+            border-radius: var(--radius-sm);
+            font-size: 12px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: var(--transition);
+            background: var(--bg-card);
+            color: var(--text-secondary);
+            border: 1px solid transparent;
+            white-space: nowrap;
+        }
+        .btn:hover {
+            transform: translateY(-1px);
+            box-shadow: var(--shadow-glow);
+        }
+        .btn:active {
+            transform: scale(0.97);
+        }
+        .btn-success {
+            background: linear-gradient(135deg, var(--accent-green), #22d3ee);
+            color: #0b0e17;
+            box-shadow: 0 4px 15px rgba(52, 211, 153, 0.2);
+        }
+        .btn-success:hover {
+            box-shadow: 0 6px 25px rgba(52, 211, 153, 0.35);
+            transform: translateY(-2px);
+        }
+        .btn-danger {
+            background: rgba(248, 81, 73, 0.15);
+            color: var(--accent-red);
+            border: 1px solid rgba(248, 81, 73, 0.2);
+        }
+        .btn-danger:hover {
+            background: rgba(248, 81, 73, 0.25);
+            border-color: rgba(248, 81, 73, 0.4);
+        }
+        .btn-outline {
+            background: transparent;
+            border: 1px solid var(--border-color);
+            color: var(--text-secondary);
+        }
+        .btn-outline:hover {
+            border-color: var(--accent-blue);
+            color: var(--text-primary);
+            background: rgba(79, 156, 247, 0.06);
+        }
+        .btn-ghost {
+            background: transparent;
+            color: var(--text-muted);
+            padding: 6px 10px;
+        }
+        .btn-ghost:hover {
+            color: var(--text-primary);
+            background: rgba(255, 255, 255, 0.04);
+        }
+        .btn-icon {
+            padding: 6px 8px;
+            font-size: 14px;
+        }
+        .btn-sm {
+            padding: 2px 8px;
+            font-size: 11px;
+        }
+        .kbd {
+            display: inline-block;
+            padding: 0 6px;
+            font-size: 10px;
+            font-weight: 600;
+            color: var(--text-muted);
+            background: rgba(255, 255, 255, 0.04);
+            border-radius: 4px;
+            border: 1px solid var(--border-color);
+            font-family: inherit;
+            line-height: 1.6;
+        }
+        .compiler-select {
+            background: var(--bg-card);
+            border: 1px solid var(--border-color);
+            border-radius: var(--radius-sm);
+            color: var(--text-secondary);
+            padding: 4px 10px;
+            font-size: 12px;
+            font-family: inherit;
+            cursor: pointer;
+            outline: none;
+            transition: var(--transition);
+        }
+        .compiler-select:hover,
+        .compiler-select:focus {
+            border-color: var(--accent-blue);
+            color: var(--text-primary);
+        }
+
+        /* ===== 标签栏 ===== */
+        .tabs-bar {
+            flex-shrink: 0;
+            display: flex;
+            align-items: center;
+            background: var(--bg-secondary);
+            border-bottom: 1px solid var(--border-color);
+            padding: 0 12px;
+            overflow-x: auto;
+            overflow-y: hidden;
+            height: 36px;
+            gap: 2px;
+            z-index: 5;
+        }
+        .tabs-bar::-webkit-scrollbar {
+            height: 2px;
+        }
+        .tabs-bar::-webkit-scrollbar-thumb {
+            background: var(--border-color);
+            border-radius: 4px;
+        }
+        .tab-item {
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            padding: 4px 12px;
+            height: 30px;
+            background: transparent;
+            color: var(--text-muted);
+            border-radius: 6px 6px 0 0;
+            font-size: 12px;
+            font-weight: 500;
+            cursor: pointer;
+            transition: var(--transition);
+            border: 1px solid transparent;
+            border-bottom: none;
+            white-space: nowrap;
+            user-select: none;
+        }
+        .tab-item:hover {
+            background: rgba(255, 255, 255, 0.04);
+            color: var(--text-secondary);
+        }
+        .tab-item.active {
+            background: var(--bg-card);
+            color: var(--text-primary);
+            border-color: var(--border-color);
+            border-bottom-color: var(--bg-card);
+        }
+        .tab-item .close-btn {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            width: 16px;
+            height: 16px;
+            border-radius: 4px;
+            font-size: 12px;
+            line-height: 1;
+            color: var(--text-muted);
+            transition: var(--transition);
+            cursor: pointer;
+            background: transparent;
+            border: none;
+            padding: 0;
+        }
+        .tab-item .close-btn:hover {
+            background: rgba(248, 81, 73, 0.2);
+            color: #f87171;
+        }
+        .tab-item .modified-dot {
+            width: 6px;
+            height: 6px;
+            border-radius: 50%;
+            background: var(--accent-orange);
+            display: inline-block;
+            margin-left: 2px;
+        }
+
+        /* ===== 主体布局（左右结构） ===== */
+        .main-layout {
+            display: flex;
+            flex: 1;
+            min-height: 0;
+            position: relative;
+            z-index: 1;
+            padding: 8px 8px 8px 12px;
+            gap: 8px;
+        }
+
+        .left-area {
+            display: flex;
+            flex-direction: column;
+            flex: 1;
+            min-width: 0;
+            gap: 8px;
+        }
+
+        .editor-wrapper {
+            flex: 1;
+            min-height: 0;
+            background: var(--bg-editor);
+            border-radius: var(--radius);
+            border: 1px solid var(--border-color);
+            overflow: hidden;
+            position: relative;
+            box-shadow: var(--shadow-glow);
+            transition: border-color var(--transition);
+        }
+        .editor-wrapper:focus-within {
+            border-color: rgba(79, 156, 247, 0.4);
+        }
+        .CodeMirror {
+            height: 100% !important;
+            font-size: 14px;
+            font-family: 'JetBrains Mono', 'Fira Code', monospace;
+            line-height: 1.7;
+            background: var(--bg-editor) !important;
+            padding: 4px 0;
+        }
+        .CodeMirror-gutters {
+            background: var(--bg-editor) !important;
+            border-right: 1px solid rgba(42, 58, 90, 0.3) !important;
+        }
+        .CodeMirror-linenumber {
+            color: var(--text-muted) !important;
+            padding: 0 12px !important;
+            opacity: 0.6;
+        }
+        .CodeMirror-cursor {
+            border-left: 2px solid var(--accent-blue) !important;
+        }
+        .CodeMirror-selected {
+            background: rgba(79, 156, 247, 0.15) !important;
+        }
+        .CodeMirror-activeline-background {
+            background: rgba(255, 255, 255, 0.02) !important;
+        }
+        .cm-s-monokai .cm-keyword {
+            color: #f92672 !important;
+        }
+        .cm-s-monokai .cm-atom {
+            color: #ae81ff !important;
+        }
+        .cm-s-monokai .cm-number {
+            color: #ae81ff !important;
+        }
+        .cm-s-monokai .cm-def {
+            color: #66d9ef !important;
+        }
+        .cm-s-monokai .cm-variable {
+            color: #f8f8f2 !important;
+        }
+        .cm-s-monokai .cm-operator {
+            color: #f92672 !important;
+        }
+        .cm-s-monokai .cm-comment {
+            color: #75715e !important;
+            font-style: italic;
+        }
+        .cm-s-monokai .cm-string {
+            color: #e6db74 !important;
+        }
+        .cm-s-monokai .cm-builtin {
+            color: #66d9ef !important;
+        }
+
+        /* 补全提示主题适配 */
+        .CodeMirror-hints {
+            background: var(--bg-card) !important;
+            border: 1px solid var(--border-color) !important;
+            border-radius: var(--radius-sm) !important;
+            padding: 4px 0 !important;
+            font-family: 'JetBrains Mono', monospace !important;
+            font-size: 13px !important;
+            box-shadow: 0 20px 60px rgba(0, 0, 0, 0.6) !important;
+        }
+        .CodeMirror-hint {
+            padding: 6px 12px !important;
+            color: var(--text-secondary) !important;
+            border-bottom: 1px solid rgba(255, 255, 255, 0.05) !important;
+        }
+        .CodeMirror-hint:hover {
+            background: rgba(79, 156, 247, 0.15) !important;
+            color: var(--text-primary) !important;
+        }
+        .CodeMirror-hint-active {
+            background: rgba(79, 156, 247, 0.2) !important;
+            color: var(--text-primary) !important;
+        }
+
+        .console-wrapper {
+            flex-shrink: 0;
+            height: 140px;
+            min-height: 80px;
+            max-height: 250px;
+            background: var(--bg-secondary);
+            border-radius: var(--radius);
+            border: 1px solid var(--border-color);
+            overflow: hidden;
+            display: flex;
+            flex-direction: column;
+            transition: height 0.3s ease;
+        }
+        .console-wrapper.resizing {
+            transition: none;
+        }
+        .console-header {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding: 4px 16px;
+            background: rgba(0, 0, 0, 0.2);
+            border-bottom: 1px solid var(--border-color);
+            flex-shrink: 0;
+            min-height: 30px;
+        }
+        .console-header .label {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            font-size: 11px;
+            font-weight: 600;
+            text-transform: uppercase;
+            letter-spacing: 0.8px;
+            color: var(--text-muted);
+        }
+        .console-header .label .dot {
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+            display: inline-block;
+            background: var(--text-muted);
+            transition: background 0.3s;
+        }
+        .console-header .label .dot.running {
+            background: var(--accent-green);
+            animation: pulse-dot 1.2s ease-in-out infinite;
+        }
+        .console-header .label .dot.error {
+            background: #f87171;
+        }
+        @keyframes pulse-dot {
+            0%,
+            100% {
+                opacity: 1;
+                transform: scale(1);
+            }
+            50% {
+                opacity: 0.4;
+                transform: scale(0.7);
+            }
+        }
+        .console-body {
+            flex: 1;
+            overflow-y: auto;
+            padding: 8px 16px;
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 13px;
+            line-height: 1.7;
+            color: var(--text-secondary);
+            white-space: pre-wrap;
+            word-break: break-all;
+            background: rgba(0, 0, 0, 0.15);
+        }
+        .console-body .output-line {
+            padding: 0;
+            margin: 0;
+            border-bottom: 1px solid rgba(255, 255, 255, 0.02);
+        }
+        .console-body .output-line.error {
+            color: #f87171;
+        }
+        .console-body .output-line.success {
+            color: var(--accent-green);
+        }
+        .console-body .output-line.warning {
+            color: var(--accent-orange);
+        }
+        .console-body .output-line.info {
+            color: var(--accent-blue);
+        }
+        .console-body .empty-hint {
+            color: var(--text-muted);
+            opacity: 0.5;
+            font-style: italic;
+            user-select: none;
+        }
+
+        .resize-handle {
+            height: 4px;
+            background: transparent;
+            cursor: ns-resize;
+            position: relative;
+            flex-shrink: 0;
+            transition: background 0.2s;
+            margin: 0 12px;
+        }
+        .resize-handle:hover,
+        .resize-handle.active {
+            background: rgba(79, 156, 247, 0.2);
+        }
+        .resize-handle::after {
+            content: '';
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            width: 40px;
+            height: 2px;
+            background: var(--border-color);
+            border-radius: 4px;
+            opacity: 0.4;
+        }
+        .resize-handle:hover::after {
+            background: var(--accent-blue);
+            opacity: 0.8;
+        }
+
+        /* ===== 右侧边栏 ===== */
+        .sidebar {
+            width: var(--sidebar-width);
+            flex-shrink: 0;
+            background: var(--bg-secondary);
+            border-radius: var(--radius);
+            border: 1px solid var(--border-color);
+            display: flex;
+            flex-direction: column;
+            overflow: hidden;
+            transition: width 0.2s ease;
+            position: relative;
+        }
+        .sidebar.collapsed {
+            width: 36px;
+        }
+        .sidebar .toggle-btn {
+            position: absolute;
+            right: 4px;
+            top: 4px;
+            background: var(--bg-card);
+            border: 1px solid var(--border-color);
+            border-radius: 4px;
+            color: var(--text-secondary);
+            padding: 2px 6px;
+            font-size: 12px;
+            cursor: pointer;
+            z-index: 10;
+            transition: var(--transition);
+        }
+        .sidebar .toggle-btn:hover {
+            background: var(--bg-card-hover);
+            color: var(--text-primary);
+        }
+
+        .sidebar-header {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding: 6px 12px;
+            border-bottom: 1px solid var(--border-color);
+            flex-shrink: 0;
+            min-height: 34px;
+            cursor: pointer;
+            user-select: none;
+        }
+        .sidebar-header .label {
+            font-size: 12px;
+            font-weight: 600;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+            color: var(--text-muted);
+            display: flex;
+            align-items: center;
+            gap: 6px;
+        }
+        .sidebar-header .label .arrow {
+            transition: transform 0.2s;
+        }
+        .sidebar-header .label .arrow.collapsed {
+            transform: rotate(-90deg);
+        }
+        .sidebar-header .actions {
+            display: flex;
+            gap: 4px;
+        }
+
+        .sidebar-body {
+            flex: 1;
+            overflow-y: auto;
+            padding: 6px 8px;
+            display: flex;
+            flex-direction: column;
+            gap: 4px;
+        }
+        .sidebar-body.collapsed {
+            display: none;
+        }
+
+        /* ---- 样例项 ---- */
+        .test-item {
+            background: var(--bg-card);
+            border-radius: var(--radius-sm);
+            border-left: 3px solid var(--border-color);
+            padding: 4px 8px;
+            transition: var(--transition);
+            cursor: default;
+        }
+        .test-item.passed {
+            border-left-color: var(--accent-green);
+        }
+        .test-item.failed {
+            border-left-color: var(--accent-red);
+        }
+        .test-item .test-summary {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            cursor: pointer;
+        }
+        .test-item .test-summary .expand-icon {
+            font-size: 12px;
+            color: var(--text-muted);
+            transition: transform 0.2s;
+            width: 16px;
+            text-align: center;
+            flex-shrink: 0;
+        }
+        .test-item .test-summary .expand-icon.expanded {
+            transform: rotate(90deg);
+        }
+        .test-item .test-status {
+            font-size: 13px;
+            font-weight: 600;
+            width: 18px;
+            text-align: center;
+            flex-shrink: 0;
+        }
+        .test-item .test-status.pass {
+            color: var(--accent-green);
+        }
+        .test-item .test-status.fail {
+            color: var(--accent-red);
+        }
+        .test-item .test-status.idle {
+            color: var(--text-muted);
+        }
+        .test-item .test-name {
+            flex: 1;
+            font-size: 13px;
+            color: var(--text-primary);
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
+        .test-item .test-actions {
+            display: flex;
+            gap: 2px;
+            flex-shrink: 0;
+        }
+        .test-item .test-actions .btn {
+            padding: 0 4px;
+            font-size: 11px;
+            height: 20px;
+            line-height: 20px;
+            border-radius: 4px;
+        }
+
+        /* 详情区域（可折叠） */
+        .test-item .test-detail {
+            display: none;
+            margin-top: 6px;
+            padding: 6px 8px;
+            background: rgba(0, 0, 0, 0.25);
+            border-radius: 4px;
+            font-size: 12px;
+            color: var(--text-secondary);
+            font-family: 'JetBrains Mono', monospace;
+            flex-direction: column;
+            gap: 6px;
+        }
+        .test-item .test-detail.open {
+            display: flex;
+        }
+        .test-item .test-detail .field {
+            display: flex;
+            flex-direction: column;
+            gap: 2px;
+        }
+        .test-item .test-detail .field label {
+            font-size: 11px;
+            color: var(--text-muted);
+            font-weight: 500;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }
+        .test-item .test-detail .field textarea,
+        .test-item .test-detail .field .actual-output {
+            width: 100%;
+            background: var(--bg-editor);
+            color: var(--text-primary);
+            border: 1px solid var(--border-color);
+            border-radius: 4px;
+            padding: 4px 6px;
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 12px;
+            resize: vertical;
+            outline: none;
+            min-height: 30px;
+            line-height: 1.5;
+        }
+        .test-item .test-detail .field textarea:focus {
+            border-color: var(--accent-blue);
+        }
+        .test-item .test-detail .field .actual-output {
+            background: rgba(0, 0, 0, 0.3);
+            border-color: var(--border-color);
+            min-height: 30px;
+            white-space: pre-wrap;
+            word-break: break-all;
+            cursor: default;
+            color: var(--text-secondary);
+        }
+        .test-item .test-detail .field .actual-output .empty {
+            color: var(--text-muted);
+            opacity: 0.5;
+            font-style: italic;
+        }
+        .test-item .test-detail .detail-actions {
+            display: flex;
+            justify-content: flex-end;
+            gap: 6px;
+            margin-top: 4px;
+        }
+        .test-item .test-detail .detail-actions .btn {
+            padding: 2px 12px;
+            font-size: 11px;
+        }
+
+        .empty-tests {
+            color: var(--text-muted);
+            font-size: 12px;
+            text-align: center;
+            padding: 20px 0;
+        }
+
+        .statusbar {
+            flex-shrink: 0;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding: 2px 20px;
+            background: rgba(17, 24, 39, 0.6);
+            border-top: 1px solid var(--border-color);
+            font-size: 11px;
+            color: var(--text-muted);
+            backdrop-filter: blur(8px);
+            z-index: 5;
+            min-height: 26px;
+        }
+        .statusbar .left,
+        .statusbar .right {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+        }
+        .statusbar .sep {
+            opacity: 0.2;
+        }
+        .statusbar .indicator .led {
+            width: 6px;
+            height: 6px;
+            border-radius: 50%;
+            display: inline-block;
+            background: var(--accent-green);
+        }
+        .statusbar .indicator .led.off {
+            background: var(--text-muted);
+            opacity: 0.3;
+        }
+
+        .loading-overlay {
+            position: absolute;
+            inset: 0;
+            background: rgba(11, 14, 23, 0.85);
+            backdrop-filter: blur(4px);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            z-index: 50;
+            border-radius: var(--radius);
+            opacity: 0;
+            pointer-events: none;
+            transition: opacity 0.4s;
+        }
+        .loading-overlay.active {
+            opacity: 1;
+            pointer-events: auto;
+        }
+        .loading-overlay .spinner {
+            width: 44px;
+            height: 44px;
+            border: 3px solid var(--border-color);
+            border-top: 3px solid var(--accent-blue);
+            border-radius: 50%;
+            animation: spin 0.8s linear infinite;
+        }
+        @keyframes spin {
+            to {
+                transform: rotate(360deg);
+            }
+        }
+
+        .modal-overlay {
+            display: none;
+            position: fixed;
+            inset: 0;
+            background: rgba(0, 0, 0, 0.7);
+            backdrop-filter: blur(4px);
+            z-index: 1000;
+            align-items: center;
+            justify-content: center;
+        }
+        .modal-overlay.active {
+            display: flex;
+        }
+        .modal {
+            background: var(--bg-secondary);
+            border: 1px solid var(--border-color);
+            border-radius: var(--radius);
+            padding: 24px;
+            max-width: 600px;
+            width: 90%;
+            max-height: 80vh;
+            display: flex;
+            flex-direction: column;
+            box-shadow: 0 30px 80px rgba(0, 0, 0, 0.8);
+        }
+        .modal h2 {
+            font-size: 18px;
+            font-weight: 600;
+            margin-bottom: 12px;
+            color: var(--text-primary);
+        }
+        .modal .field {
+            margin-bottom: 12px;
+        }
+        .modal .field label {
+            display: block;
+            font-size: 13px;
+            color: var(--text-secondary);
+            margin-bottom: 4px;
+        }
+        .modal .field textarea {
+            width: 100%;
+            background: var(--bg-editor);
+            color: var(--text-primary);
+            border: 1px solid var(--border-color);
+            border-radius: var(--radius-sm);
+            padding: 8px 10px;
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 13px;
+            outline: none;
+            resize: vertical;
+            min-height: 60px;
+        }
+        .modal .field textarea:focus {
+            border-color: var(--accent-blue);
+        }
+        .modal .actions {
+            display: flex;
+            justify-content: flex-end;
+            gap: 10px;
+            margin-top: 16px;
+        }
+
+        .toast-container {
+            position: fixed;
+            bottom: 80px;
+            right: 24px;
+            z-index: 999;
+            display: flex;
+            flex-direction: column;
+            gap: 10px;
+            pointer-events: none;
+        }
+        .toast {
+            padding: 10px 20px;
+            background: var(--bg-card);
+            border: 1px solid var(--border-color);
+            border-radius: var(--radius-sm);
+            backdrop-filter: blur(16px);
+            box-shadow: 0 20px 60px rgba(0, 0, 0, 0.5);
+            font-size: 13px;
+            color: var(--text-primary);
+            pointer-events: auto;
+            animation: slideIn 0.3s ease-out;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            min-width: 180px;
+        }
+        .toast.success {
+            border-left: 3px solid var(--accent-green);
+        }
+        .toast.error {
+            border-left: 3px solid #f87171;
+        }
+        .toast.info {
+            border-left: 3px solid var(--accent-blue);
+        }
+        @keyframes slideIn {
+            from {
+                opacity: 0;
+                transform: translateX(30px) scale(0.96);
+            }
+            to {
+                opacity: 1;
+                transform: translateX(0) scale(1);
+            }
+        }
+
+        @media (max-width: 768px) {
+            .sidebar {
+                width: 200px;
+            }
+            .sidebar.collapsed {
+                width: 30px;
+            }
+            .main-layout {
+                padding: 4px;
+                gap: 4px;
+            }
+            .navbar {
+                padding: 6px 12px;
+            }
+            .navbar-brand {
+                font-size: 15px;
+            }
+            .navbar-brand .badge {
+                display: none;
+            }
+            .btn {
+                padding: 4px 10px;
+                font-size: 11px;
+            }
+            .tabs-bar {
+                height: 30px;
+                padding: 0 6px;
+            }
+            .tab-item {
+                font-size: 11px;
+                padding: 2px 8px;
+                height: 26px;
+            }
+            .console-wrapper {
+                height: 100px;
+                min-height: 60px;
+            }
+            .statusbar {
+                font-size: 10px;
+                padding: 2px 12px;
+            }
+            .modal {
+                padding: 16px;
+                max-width: 95%;
+            }
+        }
+        @media (max-width: 480px) {
+            .sidebar {
+                width: 160px;
+            }
+            .sidebar.collapsed {
+                width: 28px;
+            }
+        }
+    </style>
+</head>
+<body>
+
+    <div id="app">
+        <!-- 导航栏 -->
+        <header class="navbar">
+		<div class="navbar-brand">
+		    <svg viewBox="0 0 24 24" stroke-linecap="round" stroke-linejoin="round">
+		        <polyline points="4 7 4 4 20 4 20 7" />
+		        <line x1="9" y1="20" x2="15" y2="20" />
+		        <line x1="12" y1="4" x2="12" y2="20" />
+		    </svg>
+		    <span>DTUG IDE</span>
+		    <span class="badge">多功能C++编辑器</span>
+		</div>
+
+            <div class="navbar-actions">
+                <button class="btn btn-outline btn-icon" id="newFileBtn" title="新建 (Ctrl+N)"><span>📄</span><span class="btn-text">新建</span></button>
+                <button class="btn btn-outline btn-icon" id="openFileBtn" title="打开"><span>📂</span><span class="btn-text">打开</span></button>
+                <button class="btn btn-outline btn-icon" id="saveFileBtn" title="保存 (Ctrl+S)"><span>💾</span><span class="btn-text">保存</span></button>
+                <button class="btn btn-outline btn-icon" id="saveAsFileBtn" title="另存为 (Ctrl+Shift+S)"><span>📤</span><span class="btn-text">另存为</span></button>
+                <span style="opacity:0.2;margin:0 4px;">|</span>
+                <select id="compilerSelect" class="compiler-select">
+                    <option value="g++">g++</option>
+                    <option value="g++-13">g++ 13</option>
+                </select>
+                <button class="btn btn-success" id="runBtn"><span>▶</span><span class="btn-text">编译运行</span><span class="kbd">Ctrl+Enter</span></button>
+                <button class="btn btn-danger" id="clearBtn"><span>✕</span><span class="btn-text">清空</span></button>
+                <button class="btn btn-outline btn-icon" id="settingsBtn" title="默认代码"><span>⚙️</span></button>
+		  <a href="/judge" class="btn btn-outline btn-icon" title="样例测评"><span>📊</span><span class="btn-text">在线评测</span></a>
+            </div>
+        </header>
+
+        <!-- 标签栏 -->
+        <div class="tabs-bar" id="tabsBar"></div>
+
+        <!-- 主体布局 -->
+        <div class="main-layout">
+            <!-- 左侧 -->
+            <div class="left-area">
+                <div class="editor-wrapper" id="editorWrapper">
+                    <textarea id="codeEditor"></textarea>
+                    <div class="loading-overlay" id="loadingOverlay"><div class="spinner"></div></div>
+                </div>
+                <div class="resize-handle" id="resizeHandle"></div>
+                <div class="console-wrapper" id="consoleWrapper">
+                    <div class="console-header">
+                        <div class="label">
+                            <span class="dot" id="statusDot"></span>
+                            <span id="statusLabel">就绪</span>
+                            <span style="opacity:0.3;margin-left:8px;">╱</span>
+                            <span style="font-weight:400;opacity:0.6;" id="compileTime"></span>
+                            <span style="opacity:0.3;margin-left:8px;">╱</span>
+                            <span style="font-weight:400;opacity:0.6;font-size:10px;" id="fontSizeDisplay">14px</span>
+                        </div>
+                        <div class="actions">
+                            <button class="btn btn-ghost btn-icon" id="clearConsoleBtn" style="padding:2px 8px;font-size:14px;"><span>⌧</span></button>
+                        </div>
+                    </div>
+                    <div class="console-body" id="consoleBody">
+                        <span class="empty-hint">▶ 点击「编译运行」或按 Ctrl+Enter 执行当前文件</span>
+                    </div>
+                </div>
+            </div>
+
+            <!-- 右侧边栏 -->
+            <div class="sidebar" id="sidebar">
+                <button class="toggle-btn" id="sidebarToggle" title="折叠/展开侧边栏">◀</button>
+                <div class="sidebar-header" id="sidebarHeader">
+                    <span class="label">
+                        <span class="arrow" id="sidebarArrow">▼</span>
+                        样例测试
+                    </span>
+                    <span class="actions">
+                        <button class="btn btn-outline btn-sm" id="addTestBtn" title="添加样例">➕</button>
+                        <button class="btn btn-success btn-sm" id="runAllTestsBtn" title="运行全部 (Shift+Enter)">▶▶</button>
+                        <button class="btn btn-ghost btn-sm" id="clearResultsBtn" title="清空结果">✕</button>
+                    </span>
+                </div>
+                <div class="sidebar-body" id="sidebarBody">
+                    <div class="empty-tests">暂无样例，点击 ➕ 添加</div>
+                </div>
+            </div>
+        </div>
+
+        <!-- 状态栏 -->
+        <div class="statusbar">
+            <div class="left">
+                <span id="statusCursor">行 1 · 列 1</span>
+                <span class="sep">|</span>
+                <span id="statusFileName">未命名</span>
+                <span class="sep">|</span>
+                <span class="indicator"><span class="led" id="statusLed"></span><span id="statusReady">就绪</span></span>
+            </div>
+            <div class="right">
+                <span id="statusChars">0 字符</span>
+                <span class="sep">|</span>
+                <span id="statusLines">0 行</span>
+                <span class="sep">|</span>
+                <span>🔒 本地 g++</span>
+            </div>
+        </div>
+    </div>
+
+    <!-- 模态框：添加样例 -->
+    <div class="modal-overlay" id="testModal">
+        <div class="modal">
+            <h2>添加样例</h2>
+            <div class="field">
+                <label>标准输入 (stdin)</label>
+                <textarea id="testInputTextarea" placeholder="输入数据，如：10 20" rows="3"></textarea>
+            </div>
+            <div class="field">
+                <label>期望输出 (expected)</label>
+                <textarea id="testExpectedTextarea" placeholder="期望输出中包含的文本（可选）" rows="3"></textarea>
+            </div>
+            <div class="actions">
+                <button class="btn btn-outline" id="testModalCancel">取消</button>
+                <button class="btn btn-success" id="testModalSave">保存</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- 设置默认代码模态框 -->
+    <div class="modal-overlay" id="settingsModal">
+        <div class="modal">
+            <h2>⚙️ 默认代码模板</h2>
+            <textarea id="defaultCodeTextarea" style="flex:1;min-height:150px;background:var(--bg-editor);color:var(--text-primary);border:1px solid var(--border-color);border-radius:var(--radius-sm);padding:12px;font-family:'JetBrains Mono',monospace;font-size:13px;resize:vertical;outline:none;"></textarea>
+            <div class="actions">
+                <button class="btn btn-outline" id="settingsCancelBtn">取消</button>
+                <button class="btn btn-success" id="settingsSaveBtn">保存</button>
+            </div>
+        </div>
+    </div>
+
+    <div class="toast-container" id="toastContainer"></div>
+
+    <script>
+        (function() {
+            'use strict';
+
+            // ============================================================
+            //  DOM 引用
+            // ============================================================
+            const textarea = document.getElementById('codeEditor');
+            const consoleBody = document.getElementById('consoleBody');
+            const statusDot = document.getElementById('statusDot');
+            const statusLabel = document.getElementById('statusLabel');
+            const statusCursor = document.getElementById('statusCursor');
+            const statusChars = document.getElementById('statusChars');
+            const statusLines = document.getElementById('statusLines');
+            const statusReady = document.getElementById('statusReady');
+            const statusLed = document.getElementById('statusLed');
+            const statusFileName = document.getElementById('statusFileName');
+            const compileTime = document.getElementById('compileTime');
+            const loadingOverlay = document.getElementById('loadingOverlay');
+            const runBtn = document.getElementById('runBtn');
+            const clearBtn = document.getElementById('clearBtn');
+            const clearConsoleBtn = document.getElementById('clearConsoleBtn');
+            const resizeHandle = document.getElementById('resizeHandle');
+            const consoleWrapper = document.getElementById('consoleWrapper');
+            const compilerSelect = document.getElementById('compilerSelect');
+            const toastContainer = document.getElementById('toastContainer');
+            const tabsBar = document.getElementById('tabsBar');
+            const newFileBtn = document.getElementById('newFileBtn');
+            const openFileBtn = document.getElementById('openFileBtn');
+            const saveFileBtn = document.getElementById('saveFileBtn');
+            const saveAsFileBtn = document.getElementById('saveAsFileBtn');
+            const settingsBtn = document.getElementById('settingsBtn');
+            const settingsModal = document.getElementById('settingsModal');
+            const defaultCodeTextarea = document.getElementById('defaultCodeTextarea');
+            const settingsCancelBtn = document.getElementById('settingsCancelBtn');
+            const settingsSaveBtn = document.getElementById('settingsSaveBtn');
+            const editorWrapper = document.getElementById('editorWrapper');
+            const fontSizeDisplay = document.getElementById('fontSizeDisplay');
+
+            // 侧边栏
+            const sidebar = document.getElementById('sidebar');
+            const sidebarToggle = document.getElementById('sidebarToggle');
+            const sidebarHeader = document.getElementById('sidebarHeader');
+            const sidebarBody = document.getElementById('sidebarBody');
+            const sidebarArrow = document.getElementById('sidebarArrow');
+
+            // 样例相关
+            const addTestBtn = document.getElementById('addTestBtn');
+            const runAllTestsBtn = document.getElementById('runAllTestsBtn');
+            const clearResultsBtn = document.getElementById('clearResultsBtn');
+            const testModal = document.getElementById('testModal');
+            const testInputTextarea = document.getElementById('testInputTextarea');
+            const testExpectedTextarea = document.getElementById('testExpectedTextarea');
+            const testModalCancel = document.getElementById('testModalCancel');
+            const testModalSave = document.getElementById('testModalSave');
+
+            // ============================================================
+            //  存储与配置
+            // ============================================================
+            const STORAGE_KEY_DEFAULT_CODE = 'editor_default_code';
+            const STORAGE_KEY_FONT_SIZE = 'editor_font_size';
+            const STORAGE_KEY_SIDEBAR_COLLAPSED = 'sidebar_collapsed';
+            const BUILTIN_DEFAULT_CODE =
+                `#include <iostream>\n\nint main() {\n    std::cout << "Hello, 世界!" << std::endl;\n    return 0;\n}`;
+
+            function getDefaultCode() {
+                const stored = localStorage.getItem(STORAGE_KEY_DEFAULT_CODE);
+                return stored !== null ? stored : BUILTIN_DEFAULT_CODE;
+            }
+
+            function setDefaultCode(code) { localStorage.setItem(STORAGE_KEY_DEFAULT_CODE, code); }
+
+            function getFontSize() {
+                const stored = localStorage.getItem(STORAGE_KEY_FONT_SIZE);
+                if (stored !== null) {
+                    const size = parseInt(stored, 10);
+                    if (!isNaN(size) && size >= 8 && size <= 40) return size;
+                }
+                return 14;
+            }
+
+            function setFontSize(size) { localStorage.setItem(STORAGE_KEY_FONT_SIZE, String(size)); }
+
+            function getSidebarCollapsed() {
+                return localStorage.getItem(STORAGE_KEY_SIDEBAR_COLLAPSED) === 'true';
+            }
+
+            function setSidebarCollapsed(collapsed) {
+                localStorage.setItem(STORAGE_KEY_SIDEBAR_COLLAPSED, String(collapsed));
+            }
+
+            // ============================================================
+            //  数据
+            // ============================================================
+            let editor = null;
+            let files = [];
+            let activeId = null;
+            let nextId = 1;
+            let nextTestId = 1;
+            let currentFontSize = getFontSize();
+
+            function getFileById(id) { return files.find(f => f.id === id); }
+
+            function getActiveFile() { return getFileById(activeId); }
+
+            function generateFileName() {
+                let base = '未命名',
+                    num = 1;
+                while (files.some(f => f.name === `${base}-${num}.cpp`)) num++;
+                return `${base}-${num}.cpp`;
+            }
+
+            function isFileSystemAccessSupported() {
+                return 'showOpenFilePicker' in window && 'showSaveFilePicker' in window;
+            }
+
+            // ============================================================
+            //  编辑器初始化（含自动补全）
+            // ============================================================
+            function initEditor() {
+                editor = CodeMirror.fromTextArea(textarea, {
+                    mode: 'text/x-c++src',
+                    theme: 'monokai',
+                    lineNumbers: true,
+                    matchBrackets: true,
+                    autoCloseBrackets: true,
+                    styleActiveLine: true,
+                    indentUnit: 4,
+                    tabSize: 4,
+                    extraKeys: {
+                        // 编译运行
+                        'Ctrl-Enter': function(cm) { runCode();
+                            return false; },
+                        'Cmd-Enter': function(cm) { runCode();
+                            return false; },
+                        // 保存
+                        'Ctrl-S': function(cm) { cm.save();
+                            saveCurrentFile();
+                            return false; },
+                        'Cmd-S': function(cm) { cm.save();
+                            saveCurrentFile();
+                            return false; },
+                        'Ctrl-Shift-S': function(cm) { saveAsFile();
+                            return false; },
+                        'Cmd-Shift-S': function(cm) { saveAsFile();
+                            return false; },
+                        // 新建
+                        'Ctrl-N': function(cm) { createNewFile();
+                            return false; },
+                        'Cmd-N': function(cm) { createNewFile();
+                            return false; },
+                        // 关闭
+                        'Ctrl-W': function(cm) {
+                            const active = getActiveFile();
+                            if (active) closeFile(active.id);
+                            return false;
+                        },
+                        'Cmd-W': function(cm) {
+                            const active = getActiveFile();
+                            if (active) closeFile(active.id);
+                            return false;
+                        },
+                        // 一键测试全部（Shift+Enter）
+                        'Shift-Enter': function(cm) { runAllTests();
+                            return false; },
+                        // 手动触发补全
+                        'Ctrl-Space': function(cm) { cm.showHint({ completeSingle: false }); },
+                        'Cmd-Space': function(cm) { cm.showHint({ completeSingle: false }); }
+                    },
+                    hintOptions: {
+                        completeSingle: false,
+                        hint: CodeMirror.hint.clike
+                    },
+                    viewportMargin: Infinity,
+                });
+
+                // 自动补全
+                editor.on('inputRead', function(cm, change) {
+                    if (cm.getMode().name !== 'clike') return;
+                    var cur = cm.getCursor();
+                    var token = cm.getTokenAt(cur);
+                    if (token.type && (token.type.indexOf('comment') !== -1 || token.type.indexOf('string') !== -1)) {
+                        return;
+                    }
+                    if (change.text.length === 1 && /[\s\W]/.test(change.text[0])) {
+                        return;
+                    }
+                    clearTimeout(cm._hintTimer);
+                    cm._hintTimer = setTimeout(function() {
+                        cm.showHint({ completeSingle: false });
+                    }, 50);
+                });
+
+                editor.on('cursorActivity', function() {
+                    const pos = editor.getCursor();
+                    statusCursor.textContent = `行 ${pos.line + 1} · 列 ${pos.ch + 1}`;
+                    updateStatusStats();
+                });
+
+                editor.on('change', function() {
+                    const active = getActiveFile();
+                    if (active) {
+                        active.content = editor.getValue();
+                        active.modified = true;
+                        updateTabUI(active.id);
+                        updateStatusStats();
+                    }
+                    setStatus('idle', '已修改');
+                    compileTime.textContent = '';
+                });
+
+                applyFontSize(currentFontSize);
+
+                // 初始文件
+                createNewFile('hello.cpp', getDefaultCode());
+                switchToFile(files[0].id);
+
+                setTimeout(() => { editor.refresh();
+                    editor.focus(); }, 100);
+
+                if (!isFileSystemAccessSupported()) {
+                    showToast('⚠️', '当前浏览器不支持 File System Access API，保存将使用下载方式', 'error');
+                }
+
+                // 滚轮缩放
+                editorWrapper.addEventListener('wheel', function(e) {
+                    if (e.ctrlKey || e.metaKey) {
+                        e.preventDefault();
+                        const delta = -e.deltaY;
+                        let newSize = currentFontSize + (delta > 0 ? 1 : -1);
+                        newSize = Math.min(40, Math.max(8, newSize));
+                        if (newSize !== currentFontSize) {
+                            currentFontSize = newSize;
+                            applyFontSize(currentFontSize);
+                            setFontSize(currentFontSize);
+                            showToast('🔍', `字体大小: ${currentFontSize}px`, 'info');
+                        }
+                    }
+                }, { passive: false });
+            }
+
+            function applyFontSize(size) {
+                const wrapper = editor.getWrapperElement();
+                if (wrapper) {
+                    wrapper.style.fontSize = size + 'px';
+                    fontSizeDisplay.textContent = size + 'px';
+                }
+                if (editor) editor.refresh();
+            }
+
+            // ============================================================
+            //  文件管理 (含 tests)
+            // ============================================================
+            function createNewFile(name, content, handle) {
+                if (!name) name = generateFileName();
+                if (content === undefined) content = getDefaultCode();
+                const file = {
+                    id: nextId++,
+                    name,
+                    content,
+                    handle: handle || null,
+                    modified: false,
+                    tests: []
+                };
+                files.push(file);
+                renderTabs();
+                switchToFile(file.id);
+                return file;
+            }
+
+            function switchToFile(id) {
+                const file = getFileById(id);
+                if (!file) return;
+                // 保存当前文件内容
+                const active = getActiveFile();
+                if (active) {
+                    active.content = editor.getValue();
+                }
+                activeId = id;
+                editor.setValue(file.content);
+                editor.clearHistory();
+                editor.refresh();
+                updateTabsActive();
+                updateStatusBar();
+                setStatus('idle', file.modified ? '已修改' : '就绪');
+                // 刷新样例列表
+                renderTests();
+            }
+
+            function closeFile(id) {
+                if (files.length === 1) { showToast('⚠️', '至少保留一个文件', 'error'); return; }
+                const file = getFileById(id);
+                if (!file) return;
+                if (file.modified && !confirm(`文件 "${file.name}" 已修改，确定关闭吗？`)) return;
+                files = files.filter(f => f.id !== id);
+                renderTabs();
+                if (activeId === id) switchToFile(files[0].id);
+                else updateTabsActive();
+                showToast('🗑️', `已关闭 ${file.name}`, 'info');
+            }
+
+            // ============================================================
+            //  样例管理（自动编号，可展开编辑）
+            // ============================================================
+            function getActiveTests() {
+                const active = getActiveFile();
+                return active ? active.tests : [];
+            }
+
+            function addTest(input, expected) {
+                const active = getActiveFile();
+                if (!active) {
+                    showToast('⚠️', '没有打开的文件', 'error');
+                    return;
+                }
+                const test = {
+                    id: nextTestId++,
+                    input: input || '',
+                    expected: expected || '',
+                    result: null,
+                    expanded: false
+                };
+                active.tests.push(test);
+                renderTests();
+                showToast('➕', `添加 Test #${active.tests.length}`, 'info');
+            }
+
+            function removeTest(testId) {
+                const active = getActiveFile();
+                if (!active) return;
+                const idx = active.tests.findIndex(t => t.id === testId);
+                if (idx === -1) return;
+                active.tests.splice(idx, 1);
+                renderTests();
+                showToast('🗑️', `删除 Test #${idx+1}`, 'info');
+            }
+
+            function updateTestData(testId, input, expected) {
+                const active = getActiveFile();
+                if (!active) return;
+                const test = active.tests.find(t => t.id === testId);
+                if (!test) return;
+                test.input = input;
+                test.expected = expected;
+                test.result = null; // 清除旧结果
+                renderTests();
+                const idx = active.tests.indexOf(test);
+                showToast('✏️', `更新 Test #${idx+1}`, 'info');
+            }
+
+            function updateTestUI(testId, result) {
+                const active = getActiveFile();
+                if (!active) return;
+                const test = active.tests.find(t => t.id === testId);
+                if (!test) return;
+                test.result = result;
+                renderTests();
+            }
+
+            function toggleTestExpanded(testId) {
+                const active = getActiveFile();
+                if (!active) return;
+                const test = active.tests.find(t => t.id === testId);
+                if (!test) return;
+                test.expanded = !test.expanded;
+                renderTests();
+            }
+
+            function renderTests() {
+                const tests = getActiveTests();
+                sidebarBody.innerHTML = '';
+                if (tests.length === 0) {
+                    sidebarBody.innerHTML = `<div class="empty-tests">暂无样例，点击 ➕ 添加</div>`;
+                    return;
+                }
+                tests.forEach((test, index) => {
+                    const div = document.createElement('div');
+                    div.className = 'test-item';
+                    if (test.result) {
+                        div.classList.add(test.result.passed ? 'passed' : 'failed');
+                    }
+                    div.dataset.testId = test.id;
+
+                    const summary = document.createElement('div');
+                    summary.className = 'test-summary';
+
+                    const expandIcon = document.createElement('span');
+                    expandIcon.className = 'expand-icon' + (test.expanded ? ' expanded' : '');
+                    expandIcon.textContent = '▶';
+                    expandIcon.addEventListener('click', function(e) {
+                        e.stopPropagation();
+                        toggleTestExpanded(test.id);
+                    });
+
+                    const statusSpan = document.createElement('span');
+                    statusSpan.className = 'test-status';
+                    if (test.result === null) {
+                        statusSpan.textContent = '⏳';
+                        statusSpan.className = 'test-status idle';
+                    } else if (test.result.passed) {
+                        statusSpan.textContent = '✓';
+                        statusSpan.className = 'test-status pass';
+                    } else {
+                        statusSpan.textContent = '✗';
+                        statusSpan.className = 'test-status fail';
+                    }
+
+                    const nameSpan = document.createElement('span');
+                    nameSpan.className = 'test-name';
+                    nameSpan.textContent = `Test #${index + 1}`;
+
+                    const actions = document.createElement('div');
+                    actions.className = 'test-actions';
+                    const runBtn = document.createElement('button');
+                    runBtn.className = 'btn btn-success btn-sm';
+                    runBtn.textContent = '▶';
+                    runBtn.title = '运行此样例';
+                    runBtn.addEventListener('click', function(e) {
+                        e.stopPropagation();
+                        runSingleTest(test.id);
+                    });
+                    const delBtn = document.createElement('button');
+                    delBtn.className = 'btn btn-danger btn-sm';
+                    delBtn.textContent = '✕';
+                    delBtn.title = '删除';
+                    delBtn.addEventListener('click', function(e) {
+                        e.stopPropagation();
+                        if (confirm(`删除 Test #${index+1} ？`)) removeTest(test.id);
+                    });
+                    actions.appendChild(runBtn);
+                    actions.appendChild(delBtn);
+
+                    summary.appendChild(expandIcon);
+                    summary.appendChild(statusSpan);
+                    summary.appendChild(nameSpan);
+                    summary.appendChild(actions);
+
+                    summary.addEventListener('click', function(e) {
+                        if (e.target.closest('.test-actions') || e.target.closest('.expand-icon')) return;
+                        toggleTestExpanded(test.id);
+                    });
+
+                    const detail = document.createElement('div');
+                    detail.className = 'test-detail' + (test.expanded ? ' open' : '');
+
+                    const inputField = document.createElement('div');
+                    inputField.className = 'field';
+                    inputField.innerHTML = `<label>输入 (stdin)</label>`;
+                    const inputTextarea = document.createElement('textarea');
+                    inputTextarea.value = test.input;
+                    inputTextarea.rows = 2;
+                    inputTextarea.className = 'test-input-edit';
+                    inputField.appendChild(inputTextarea);
+
+                    const expectedField = document.createElement('div');
+                    expectedField.className = 'field';
+                    expectedField.innerHTML = `<label>期望输出</label>`;
+                    const expectedTextarea = document.createElement('textarea');
+                    expectedTextarea.value = test.expected;
+                    expectedTextarea.rows = 2;
+                    expectedTextarea.className = 'test-expected-edit';
+                    expectedField.appendChild(expectedTextarea);
+
+                    const actualField = document.createElement('div');
+                    actualField.className = 'field';
+                    actualField.innerHTML = `<label>实际输出</label>`;
+                    const actualDiv = document.createElement('div');
+                    actualDiv.className = 'actual-output';
+                    if (test.result) {
+                        actualDiv.textContent = test.result.actual || '(无输出)';
+                    } else {
+                        actualDiv.innerHTML = '<span class="empty">尚未运行</span>';
+                    }
+                    actualField.appendChild(actualDiv);
+
+                    const detailActions = document.createElement('div');
+                    detailActions.className = 'detail-actions';
+                    const updateBtn = document.createElement('button');
+                    updateBtn.className = 'btn btn-success btn-sm';
+                    updateBtn.textContent = '更新';
+                    updateBtn.addEventListener('click', function(e) {
+                        e.stopPropagation();
+                        const newInput = inputTextarea.value;
+                        const newExpected = expectedTextarea.value;
+                        updateTestData(test.id, newInput, newExpected);
+                    });
+                    detailActions.appendChild(updateBtn);
+
+                    detail.appendChild(inputField);
+                    detail.appendChild(expectedField);
+                    detail.appendChild(actualField);
+                    detail.appendChild(detailActions);
+
+                    div.appendChild(summary);
+                    div.appendChild(detail);
+                    sidebarBody.appendChild(div);
+                });
+            }
+
+            // ============================================================
+            //  运行单个样例
+            // ============================================================
+            async function runSingleTest(testId) {
+                const active = getActiveFile();
+                if (!active) { showToast('⚠️', '没有打开的文件', 'error'); return; }
+                const test = active.tests.find(t => t.id === testId);
+                if (!test) { showToast('⚠️', '样例不存在', 'error'); return; }
+                const code = active.content;
+                if (!code.trim()) { showToast('⚠️', '代码为空', 'error'); return; }
+
+                setStatus('running', '测试中...');
+                loadingOverlay.classList.add('active');
+                consoleClear();
+                const idx = active.tests.indexOf(test);
+                consolePrint(`🧪 运行 Test #${idx+1}`, 'info');
+
+                try {
+                    const response = await fetch('/test', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({
+                            code: code,
+                            tests: [{ name: `Test #${idx+1}`, input: test.input, expected: test.expected }]
+                        })
+                    });
+                    const data = await response.json();
+                    if (data.error) {
+                        consolePrint('❌ 测试失败: ' + data.error, 'error');
+                        showToast('❌', '测试失败', 'error');
+                        setStatus('error', '测试失败');
+                        loadingOverlay.classList.remove('active');
+                        return;
+                    }
+                    const result = data.results[0];
+                    if (result) {
+                        const passed = result.passed;
+                        updateTestUI(testId, { passed, actual: result.actual });
+                        consolePrint(`${passed ? '✅ 通过' : '❌ 失败'}   Test #${idx+1}`, passed ? 'success' : 'error');
+                        if (!passed && result.expected) {
+                            consolePrint(`  期望: ${result.expected}`, 'info');
+                            consolePrint(`  实际: ${result.actual || '(无输出)'}`, 'info');
+                        } else if (result.actual) {
+                            consolePrint(`  输出: ${result.actual}`, 'info');
+                        }
+                        showToast(passed ? '✅ 通过' : '❌ 失败', passed ? 'success' : 'error');
+                        setStatus('success', '测试完成');
+                    }
+                } catch (err) {
+                    consolePrint('⚠️ 请求失败: ' + err.message, 'error');
+                    showToast('🌐', '后端连接失败', 'error');
+                    setStatus('error', '连接失败');
+                } finally {
+                    loadingOverlay.classList.remove('active');
+                }
+            }
+
+            // ============================================================
+            //  一键运行全部样例（Shift+Enter 触发）
+            // ============================================================
+            async function runAllTests() {
+                const active = getActiveFile();
+                if (!active) { showToast('⚠️', '没有打开的文件', 'error'); return; }
+                const tests = active.tests;
+                if (tests.length === 0) { showToast('⚠️', '当前文件没有样例', 'error'); return; }
+                const code = active.content;
+                if (!code.trim()) { showToast('⚠️', '代码为空', 'error'); return; }
+
+                const testData = tests.map((t, idx) => ({ name: `Test #${idx+1}`, input: t.input, expected: t.expected }));
+
+                setStatus('running', '测试中...');
+                loadingOverlay.classList.add('active');
+                consoleClear();
+                consolePrint(`🧪 正在测试 "${active.name}" 的 ${tests.length} 个样例...`, 'info');
+
+                try {
+                    const response = await fetch('/test', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ code, tests: testData })
+                    });
+                    const data = await response.json();
+                    if (data.error) {
+                        consolePrint('❌ 测试失败: ' + data.error, 'error');
+                        showToast('❌', '测试失败', 'error');
+                        setStatus('error', '测试失败');
+                        loadingOverlay.classList.remove('active');
+                        return;
+                    }
+                    const results = data.results;
+                    let passCount = 0;
+                    results.forEach((res, idx) => {
+                        const test = tests[idx];
+                        updateTestUI(test.id, { passed: res.passed, actual: res.actual });
+                        if (res.passed) passCount++;
+                        consolePrint(`${res.passed ? '✅ 通过' : '❌ 失败'}   Test #${idx+1}`, res.passed ? 'success' :
+                            'error');
+                        if (!res.passed && res.expected) {
+                            consolePrint(`  期望: ${res.expected}`, 'info');
+                            consolePrint(`  实际: ${res.actual || '(无输出)'}`, 'info');
+                        } else if (res.actual) {
+                            consolePrint(`  输出: ${res.actual}`, 'info');
+                        }
+                    });
+                    consolePrint(`📊 通过 ${passCount}/${results.length}`, passCount === results.length ? 'success' :
+                        'warning');
+                    showToast(passCount === results.length ? '✅ 全部通过' : `⚠️ 通过 ${passCount}/${results.length}`,
+                        passCount === results.length ? 'success' : 'error');
+                    setStatus('success', '测试完成');
+                } catch (err) {
+                    consolePrint('⚠️ 请求失败: ' + err.message, 'error');
+                    showToast('🌐', '后端连接失败', 'error');
+                    setStatus('error', '连接失败');
+                } finally {
+                    loadingOverlay.classList.remove('active');
+                }
+            }
+
+            // ============================================================
+            //  模态框（添加样例）
+            // ============================================================
+            function openAddTestDialog() {
+                testInputTextarea.value = '';
+                testExpectedTextarea.value = '';
+                testModal.classList.add('active');
+                testInputTextarea.focus();
+            }
+
+            function closeTestModal() {
+                testModal.classList.remove('active');
+            }
+
+            function saveTestModal() {
+                const input = testInputTextarea.value;
+                const expected = testExpectedTextarea.value;
+                addTest(input, expected);
+                closeTestModal();
+            }
+
+            // ============================================================
+            //  保存/打开
+            // ============================================================
+            async function saveCurrentFile() {
+                const active = getActiveFile();
+                if (!active) return;
+                active.content = editor.getValue();
+                try {
+                    if (active.handle) {
+                        await writeFileWithHandle(active.handle, active.content);
+                        active.modified = false;
+                        updateTabUI(active.id);
+                        updateStatusBar();
+                        showToast('💾', `已保存 ${active.name}`, 'success');
+                        return;
+                    }
+                    await saveAsFile();
+                } catch (err) {
+                    if (err.name !== 'AbortError') showToast('❌', '保存失败: ' + err.message, 'error');
+                }
+            }
+
+            async function saveAsFile() {
+                const active = getActiveFile();
+                if (!active) return;
+                if (!isFileSystemAccessSupported()) {
+                    downloadFile(active);
+                    return;
+                }
+                try {
+                    const handle = await window.showSaveFilePicker({
+                        suggestedName: active.name,
+                        types: [{ description: 'C++ 源文件', accept: { 'text/plain': ['.cpp', '.cxx', '.cc', '.c', '.h',
+                                    '.hpp'
+                                ] } }]
+                    });
+                    await writeFileWithHandle(handle, active.content);
+                    active.handle = handle;
+                    active.name = handle.name;
+                    active.modified = false;
+                    updateTabUI(active.id);
+                    updateStatusBar();
+                    renderTabs();
+                    showToast('💾', `已保存 ${active.name}`, 'success');
+                } catch (err) {
+                    if (err.name !== 'AbortError') showToast('❌', '保存失败: ' + err.message, 'error');
+                }
+            }
+
+            async function writeFileWithHandle(handle, content) {
+                const writable = await handle.createWritable({ keepExistingData: false });
+                await writable.write(content);
+                await writable.close();
+            }
+
+            function downloadFile(file) {
+                const blob = new Blob([file.content], { type: 'text/plain' });
+                const url = URL.createObjectURL(blob);
+                const a = document.createElement('a');
+                a.href = url;
+                a.download = file.name || 'untitled.cpp';
+                document.body.appendChild(a);
+                a.click();
+                document.body.removeChild(a);
+                URL.revokeObjectURL(url);
+                file.modified = false;
+                updateTabUI(file.id);
+                updateStatusBar();
+                showToast('💾', `已下载 ${file.name}`, 'success');
+            }
+
+            async function openFiles() {
+                if (!isFileSystemAccessSupported()) {
+                    document.getElementById('fallbackFileInput')?.click();
+                    return;
+                }
+                try {
+                    const handles = await window.showOpenFilePicker({
+                        multiple: true,
+                        types: [{ description: 'C++ 源文件', accept: { 'text/plain': ['.cpp', '.cxx', '.cc', '.c', '.h',
+                                    '.hpp', '.txt'
+                                ] } }]
+                    });
+                    for (const handle of handles) {
+                        const file = await handle.getFile();
+                        const content = await file.text();
+                        createNewFile(file.name, content, handle);
+                        showToast('📂', `已打开 ${file.name}`, 'info');
+                    }
+                } catch (err) {
+                    if (err.name !== 'AbortError') showToast('❌', '打开失败: ' + err.message, 'error');
+                }
+            }
+
+            function setupFileInput() {
+                const input = document.createElement('input');
+                input.type = 'file';
+                input.multiple = true;
+                input.accept = '.cpp,.cxx,.cc,.c,.h,.hpp,.txt';
+                input.style.display = 'none';
+                input.id = 'fallbackFileInput';
+                document.body.appendChild(input);
+                input.addEventListener('change', function(e) {
+                    const filesList = e.target.files;
+                    if (!filesList || filesList.length === 0) return;
+                    for (let f of filesList) {
+                        const reader = new FileReader();
+                        reader.onload = function(ev) {
+                            createNewFile(f.name, ev.target.result, null);
+                            showToast('📂', `已打开 ${f.name}`, 'info');
+                        };
+                        reader.readAsText(f);
+                    }
+                    input.value = '';
+                });
+            }
+
+            // ============================================================
+            //  UI 渲染
+            // ============================================================
+            function renderTabs() {
+                tabsBar.innerHTML = '';
+                files.forEach(file => {
+                    const tab = document.createElement('div');
+                    tab.className = 'tab-item' + (file.id === activeId ? ' active' : '');
+                    tab.dataset.id = file.id;
+                    const nameSpan = document.createElement('span');
+                    nameSpan.textContent = file.name;
+                    tab.appendChild(nameSpan);
+                    if (file.modified) {
+                        const dot = document.createElement('span');
+                        dot.className = 'modified-dot';
+                        tab.appendChild(dot);
+                    }
+                    const close = document.createElement('button');
+                    close.className = 'close-btn';
+                    close.innerHTML = '✕';
+                    close.title = '关闭文件';
+                    close.addEventListener('click', function(e) {
+                        e.stopPropagation();
+                        closeFile(file.id);
+                    });
+                    tab.appendChild(close);
+                    tab.addEventListener('click', function() { switchToFile(file.id); });
+                    tabsBar.appendChild(tab);
+                });
+                const activeTab = tabsBar.querySelector('.tab-item.active');
+                if (activeTab) activeTab.scrollIntoView({ behavior: 'smooth', inline: 'center', block: 'nearest' });
+                updateStatusBar();
+            }
+
+            function updateTabsActive() {
+                const tabs = tabsBar.querySelectorAll('.tab-item');
+                tabs.forEach(tab => {
+                    const id = parseInt(tab.dataset.id);
+                    tab.classList.toggle('active', id === activeId);
+                });
+            }
+
+            function updateTabUI(id) {
+                const file = getFileById(id);
+                if (!file) return;
+                const tabs = tabsBar.querySelectorAll('.tab-item');
+                for (let tab of tabs) {
+                    if (parseInt(tab.dataset.id) === id) {
+                        let dot = tab.querySelector('.modified-dot');
+                        if (file.modified) {
+                            if (!dot) {
+                                dot = document.createElement('span');
+                                dot.className = 'modified-dot';
+                                tab.insertBefore(dot, tab.querySelector('.close-btn'));
+                            }
+                        } else {
+                            if (dot) dot.remove();
+                        }
+                        break;
+                    }
+                }
+                if (id === activeId) updateStatusBar();
+            }
+
+            function updateStatusBar() {
+                const active = getActiveFile();
+                if (active) statusFileName.textContent = active.name + (active.modified ? ' *' : '');
+                else statusFileName.textContent = '无文件';
+                updateStatusStats();
+            }
+
+            function updateStatusStats() {
+                const content = editor.getValue();
+                const lines = content.split('\n');
+                statusChars.textContent = `${content.length} 字符`;
+                statusLines.textContent = `${lines.length} 行`;
+            }
+
+            // ============================================================
+            //  控制台
+            // ============================================================
+            function consoleClear() {
+                consoleBody.innerHTML = '';
+                compileTime.textContent = '';
+            }
+
+            function consolePrint(text, type) {
+                type = type || 'info';
+                const line = document.createElement('div');
+                line.className = `output-line ${type}`;
+                line.textContent = text;
+                consoleBody.appendChild(line);
+                consoleBody.scrollTop = consoleBody.scrollHeight;
+            }
+
+            function consolePrintLines(lines, type) {
+                if (typeof lines === 'string') lines = lines.split('\n');
+                lines.forEach(line => { if (line.trim() || line === '') consolePrint(line, type); });
+            }
+
+            // ============================================================
+            //  状态 & Toast
+            // ============================================================
+            function setStatus(state, msg) {
+                const dot = statusDot,
+                    label = statusLabel,
+                    led = statusLed,
+                    ready = statusReady;
+                dot.className = 'dot';
+                if (state === 'running') {
+                    dot.classList.add('running');
+                    label.textContent = msg || '编译中...';
+                    led.className = 'led';
+                    ready.textContent = '运行中';
+                } else if (state === 'error') {
+                    dot.classList.add('error');
+                    label.textContent = msg || '错误';
+                    led.className = 'led off';
+                    ready.textContent = '错误';
+                } else if (state === 'success') {
+                    dot.className = 'dot';
+                    label.textContent = msg || '完成';
+                    led.className = 'led';
+                    ready.textContent = '就绪';
+                } else {
+                    dot.className = 'dot';
+                    label.textContent = msg || '就绪';
+                    led.className = 'led off';
+                    ready.textContent = '就绪';
+                }
+            }
+
+            function showToast(icon, message, type) {
+                type = type || 'info';
+                const container = toastContainer;
+                const toast = document.createElement('div');
+                toast.className = `toast ${type}`;
+                toast.innerHTML = `<span class="icon">${icon}</span><span>${message}</span>`;
+                container.appendChild(toast);
+                setTimeout(() => {
+                    toast.style.opacity = '0';
+                    toast.style.transform = 'translateX(30px) scale(0.96)';
+                    toast.style.transition = '0.3s ease-out';
+                    setTimeout(() => toast.remove(), 300);
+                }, 3000);
+            }
+
+            // ============================================================
+            //  编译运行（单个）
+            // ============================================================
+            async function runCode() {
+                const active = getActiveFile();
+                if (!active) { showToast('⚠️', '没有打开的文件', 'error'); return; }
+                const code = active.content;
+                if (!code.trim()) { showToast('⚠️', '代码为空', 'error'); return; }
+                const compiler = compilerSelect.value;
+                setStatus('running', '编译中...');
+                loadingOverlay.classList.add('active');
+                consoleClear();
+                consolePrint(`⏳ 正在编译 "${active.name}" ...`, 'info');
+                const startTime = performance.now();
+                try {
+                    const response = await fetch('/compile', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ code, compiler })
+                    });
+                    const data = await response.json();
+                    const elapsed = ((performance.now() - startTime) / 1000).toFixed(2);
+                    compileTime.textContent = `⏱ ${elapsed}s`;
+                    if (data.status === 0) {
+                        setStatus('success', '编译成功 ✓');
+                        consolePrint('✅ 编译成功', 'success');
+                        if (data.output && data.output.trim()) {
+                            consolePrint('📋 编译信息:', 'info');
+                            consolePrintLines(data.output.trim(), 'info');
+                        }
+                        if (data.program_output) {
+                            consolePrint('📤 程序已在独立窗口中运行，运行结束后会暂停。', 'success');
+                        }
+                        showToast('✅', '编译成功，程序已运行', 'success');
+                    } else {
+                        setStatus('error', '编译失败 ✗');
+                        consolePrint('❌ 编译错误:', 'error');
+                        if (data.output) consolePrintLines(data.output.trim(), 'error');
+                        else if (data.error) consolePrintLines(data.error.trim(), 'error');
+                        else consolePrint('未知错误', 'error');
+                        showToast('❌', '编译失败，请检查代码', 'error');
+                    }
+                } catch (err) {
+                    setStatus('error', '后端连接失败');
+                    consolePrint('⚠️ 无法连接到本地编译服务: ' + err.message, 'error');
+                    consolePrint('💡 请确保已启动 Python 后端 (python app.py)', 'warning');
+                    showToast('🌐', '后端服务未启动', 'error');
+                } finally {
+                    loadingOverlay.classList.remove('active');
+                }
+            }
+
+            // ============================================================
+            //  设置默认代码
+            // ============================================================
+            function openSettings() {
+                defaultCodeTextarea.value = getDefaultCode();
+                settingsModal.classList.add('active');
+            }
+
+            function closeSettings() { settingsModal.classList.remove('active'); }
+
+            function saveSettings() {
+                setDefaultCode(defaultCodeTextarea.value);
+                closeSettings();
+                showToast('💾', '默认代码已更新', 'success');
+            }
+
+            // ============================================================
+            //  侧边栏折叠
+            // ============================================================
+            function toggleSidebar() {
+                const collapsed = sidebar.classList.toggle('collapsed');
+                setSidebarCollapsed(collapsed);
+                sidebarArrow.classList.toggle('collapsed', collapsed);
+                sidebarToggle.textContent = collapsed ? '▶' : '◀';
+                if (editor) setTimeout(() => editor.refresh(), 50);
+            }
+
+            // ============================================================
+            //  事件绑定
+            // ============================================================
+            function initEvents() {
+                runBtn.addEventListener('click', runCode);
+                clearBtn.addEventListener('click', function() {
+                    consoleClear();
+                    setStatus('idle', '已清空');
+                    compileTime.textContent = '';
+                    showToast('🧹', '控制台已清空', 'info');
+                });
+                clearConsoleBtn.addEventListener('click', function() {
+                    consoleClear();
+                    showToast('🧹', '控制台已清空', 'info');
+                });
+                newFileBtn.addEventListener('click', function() { createNewFile();
+                    showToast('📄', '新建文件', 'info'); });
+                openFileBtn.addEventListener('click', openFiles);
+                saveFileBtn.addEventListener('click', saveCurrentFile);
+                saveAsFileBtn.addEventListener('click', saveAsFile);
+                settingsBtn.addEventListener('click', openSettings);
+                settingsCancelBtn.addEventListener('click', closeSettings);
+                settingsSaveBtn.addEventListener('click', saveSettings);
+                settingsModal.addEventListener('click', function(e) { if (e.target === settingsModal) closeSettings(); });
+
+                // 样例事件
+                addTestBtn.addEventListener('click', openAddTestDialog);
+                runAllTestsBtn.addEventListener('click', runAllTests);
+                clearResultsBtn.addEventListener('click', function() {
+                    const active = getActiveFile();
+                    if (active) {
+                        active.tests.forEach(t => t.result = null);
+                        renderTests();
+                        showToast('🧹', '测试结果已清空', 'info');
+                    }
+                });
+
+                testModalCancel.addEventListener('click', closeTestModal);
+                testModalSave.addEventListener('click', saveTestModal);
+                testModal.addEventListener('click', function(e) { if (e.target === testModal) closeTestModal(); });
+
+                // 侧边栏折叠
+                sidebarToggle.addEventListener('click', toggleSidebar);
+                sidebarHeader.addEventListener('click', function(e) {
+                    if (e.target.closest('.actions')) return;
+                    toggleSidebar();
+                });
+
+                // Resize 控制台
+                let isResizing = false,
+                    startY = 0,
+                    startHeight = 0;
+                resizeHandle.addEventListener('mousedown', function(e) {
+                    isResizing = true;
+                    startY = e.clientY;
+                    startHeight = consoleWrapper.offsetHeight;
+                    document.body.style.cursor = 'ns-resize';
+                    resizeHandle.classList.add('active');
+                    consoleWrapper.classList.add('resizing');
+                    e.preventDefault();
+                });
+                document.addEventListener('mousemove', function(e) {
+                    if (!isResizing) return;
+                    let newHeight = startHeight + (startY - e.clientY);
+                    newHeight = Math.max(80, Math.min(250, newHeight));
+                    consoleWrapper.style.height = newHeight + 'px';
+                });
+                document.addEventListener('mouseup', function() {
+                    if (isResizing) {
+                        isResizing = false;
+                        document.body.style.cursor = '';
+                        resizeHandle.classList.remove('active');
+                        consoleWrapper.classList.remove('resizing');
+                        if (editor) editor.refresh();
+                    }
+                });
+
+                // 全局快捷键（Shift+Enter 备用）
+                document.addEventListener('keydown', function(e) {
+                    // Ctrl+Shift+C 清空控制台
+                    if ((e.ctrlKey || e.metaKey) && e.shiftKey && (e.key === 'c' || e.key === 'C')) {
+                        e.preventDefault();
+                        consoleClear();
+                        showToast('🧹', '控制台已清空', 'info');
+                    }
+                });
+
+                document.querySelector('.editor-wrapper').addEventListener('click', function() { if (editor) editor
+                        .focus(); });
+
+                if (getSidebarCollapsed()) {
+                    sidebar.classList.add('collapsed');
+                    sidebarArrow.classList.add('collapsed');
+                    sidebarToggle.textContent = '▶';
+                }
+            }
+
+            // ============================================================
+            //  初始化
+            // ============================================================
+            function init() {
+                setupFileInput();
+                initEditor();
+                initEvents();
+                setStatus('idle', '就绪');
+                consoleClear();
+                consolePrint('💻 欢迎使用 C++ 编辑器 (自动补全 + Shift+Enter 一键测试)', 'info');
+                consolePrint('📌 输入时自动弹出补全提示，按 Ctrl+Space 手动触发', 'info');
+                consolePrint('⌨️ Shift+Enter 一键运行全部样例，Ctrl+Enter 编译运行', 'info');
+                if (!isFileSystemAccessSupported()) {
+                    consolePrint('⚠️ 当前浏览器不支持 File System Access API，保存将使用下载方式', 'warning');
+                }
+                showToast('🚀', '编辑器已就绪', 'info');
+                renderTests();
+            }
+
+            if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', init);
+            else init();
+
+        })();
+    </script>
+
+</body>
+</html>

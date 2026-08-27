@@ -1,0 +1,34 @@
+[build-system]
+requires = ["setuptools>=70"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "dtug-ide"
+version = "2.0.0"
+description = "Lightweight PyQt6 C++ IDE with sandbox judging"
+readme = "README.md"
+requires-python = ">=3.10"
+license = "MIT"
+license-files = ["LICENCE"]
+authors = [{name = "DTUG contributors"}]
+dependencies = [
+    "PyQt6>=6.7,<7",
+    "PyQt6-WebEngine>=6.7,<7",
+    "psutil>=6,<7",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8", "ruff>=0.5"]
+
+[project.scripts]
+dtug-ide = "dtug_ide.__main__:main"
+
+[tool.setuptools.packages.find]
+include = ["dtug_ide*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
+
+[tool.ruff.lint]
+select = ["E4", "E7", "E9", "F"]
