@@ -132,20 +132,19 @@ def write_file_text(path: str | Path, content: str, encoding: str = "utf-8") -> 
 
 
 def find_compiler_candidates() -> List[str]:
-    """Find available g++ compilers on the system."""
-    candidates = ["g++", "g++-13", "g++-12", "g++-11", "g++-10", "clang++"]
-    found = []
-    for cmd in candidates:
-        if shutil.which(cmd):
-            found.append(cmd)
-    if not found and os.name == "nt":
-        # On Windows, try common MinGW paths
-        for base in [r"C:\mingw64\bin", r"C:\Program Files\mingw-w64\bin"]:
-            for exe in ["g++.exe", "clang++.exe"]:
-                p = Path(base) / exe
-                if p.exists():
-                    found.append(str(p))
-    return found if found else ["g++"]
+    """Find available g++ compilers on the system.
+
+    委托给 toolchain.discover_compilers：优先内置 MinGW64，其次本机 MSYS2 /
+    MinGW 安装路径，最后 PATH 中的 g++ / clang++。
+    """
+    try:
+        from .toolchain import discover_compilers
+        return discover_compilers()
+    except Exception:
+        # 兜底：仅做 PATH 探测
+        candidates = ["g++", "g++-13", "g++-12", "g++-11", "clang++"]
+        found = [c for c in candidates if shutil.which(c)]
+        return found if found else ["g++"]
 
 
 def is_valid_cpp_filename(name: str) -> bool:

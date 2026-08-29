@@ -1,11 +1,15 @@
-"""登录 / 注册对话框，模仿主页 main / werewolf 的认证交互。
+"""登录对话框：仅提供「经主页（Cloudflare 人机验证）登录」的桥接方式。
 
-提供三种登录方式，与网站保持一致：
-  1. 内置账号密码登录 / 注册（Python urllib 直连 auth-worker，不受浏览器 CORS 限制）。
-  2. 「在浏览器中用主页账号登录」按钮（完全照搬 werewolf 的跳转链接
-     https://cyx012113.top/#login），用于在网站完成登录。
-  3. 已登录主页的用户可把 token 粘贴回桌面端直接绑定（桌面端读不到主页的
-     共享 cookie，故用此桥接完成鉴权）。
+出于安全考虑，桌面端**不内置**用户名 / 密码 / 邮箱输入框——主页登录由
+Cloudflare Turnstile 人机验证保护，凭据只在浏览器里输入，桌面端不保存密码。
+桌面端通过以下方式拿到登录后的 token：
+
+  1. 「在浏览器中用主页账号登录」按钮：打开主页登录页（带 ``?redirect=...``），
+     登录成功后主页把 token 附加到 ``http://127.0.0.1:8731/callback?token=...``，
+     由本对话框启动的本地回调服务器捕获。
+  2. 「内嵌网页中登录」按钮：在应用内用 QWebEngineView 完成登录，导航被拦截
+     后由 EmbeddedLoginDialog 取出 token。
+  3.（兜底）已登录主页的用户把 localStorage 的 token 粘贴到此处直接绑定。
 
 网络请求在 QThread 中执行，避免阻塞 UI。
 """
@@ -17,55 +21,36 @@ from typing import Any, Dict
 from PyQt6.QtCore import QThread, QUrl, pyqtSignal
 from PyQt6.QtGui import QDesktopServices
 from PyQt6.QtWidgets import (
-    QCheckBox, QDialog, QFormLayout, QHBoxLayout, QLabel, QLineEdit,
+    QCheckBox, QDialog, QHBoxLayout, QLabel, QLineEdit,
     QPushButton, QVBoxLayout,
 )
 
-from .auth import AuthClient, HOME_LOGIN_URL
+from .auth import AuthClient
+from .embedded_login import _CallbackServer, build_login_url
+from .theme import dialog_qss, ui_palette
 
 
 class _AuthWorker(QThread):
-    """后台执行登录 / 注册 / token 绑定请求。"""
+    """后台执行 token 绑定校验请求（用 /me 取回用户信息）。"""
 
     done = pyqtSignal(bool, dict, str)  # ok, payload, mode
 
-    def __init__(self, client: AuthClient, mode: str, username: str = "", password: str = "",
-                 email: str = "", token: str = "") -> None:
+    def __init__(self, client: AuthClient, mode: str = "token", token: str = "") -> None:
         super().__init__()
         self.client = client
         self.mode = mode
-        self.username = username
-        self.password = password
-        self.email = email
         self.token = token
 
     def run(self) -> None:
-        if self.mode == "login":
-            ok, data = self.client.login(self.username, self.password)
-            if ok:
-                token = data.get("token")
-                if token:
-                    # 与网站 checkAuthStatus 一致：用 /me 取回最新用户信息
-                    # （放在后台线程执行，避免阻塞 UI）
-                    ok_me, me = self.client.get_me(token)
-                    user = me if (ok_me and isinstance(me, dict)) else data.get("user", {})
-                    self.done.emit(True, {"token": token, "user": user}, "login")
-                    return
-            # 登录失败（或响应异常）原样回传错误信息
-            self.done.emit(ok, data, "login")
-        elif self.mode == "register":
-            ok, data = self.client.register(self.username, self.email, self.password)
-            self.done.emit(ok, data, "register")
-        else:  # token 绑定
-            ok, me = self.client.get_me(self.token)
-            if ok and isinstance(me, dict):
-                self.done.emit(True, {"token": self.token, "user": me}, "token")
-            else:
-                self.done.emit(False, me if isinstance(me, dict) else {"error": "无效的 token"}, "token")
+        ok, me = self.client.get_me(self.token)
+        if ok and isinstance(me, dict):
+            self.done.emit(True, {"token": self.token, "user": me}, "token")
+        else:
+            self.done.emit(False, me if isinstance(me, dict) else {"error": "无效的 token"}, "token")
 
 
 class LoginDialog(QDialog):
-    """登录 / 注册 / token 绑定对话框，成功后 emit (token, user, remember)。"""
+    """登录对话框：成功（经主页 CF 验证）后 emit (token, user, remember)。"""
 
     login_success = pyqtSignal(str, dict, bool)
 
@@ -73,46 +58,48 @@ class LoginDialog(QDialog):
         super().__init__(parent)
         self.client = client
         self._busy = False
-        self.setWindowTitle("登录 / 注册 - DTUG IDE")
-        self.setMinimumWidth(400)
-        self.setStyleSheet(
-            "QDialog { background: #0b0e17; }"
-            "QLabel { color: #e8edf5; }"
-            "QLineEdit { background: #0d1117; color: #e8edf5; border: 1px solid #2a3a5a;"
-            " border-radius: 6px; padding: 8px; }"
-            "QPushButton { background: #1a2332; color: #e8edf5; border: 1px solid #2a3a5a;"
-            " border-radius: 6px; padding: 8px 14px; }"
-            "QPushButton:hover { border-color: #4f9cf7; }"
-            "QPushButton#primary { background: qlineargradient(x1:0,y1:0,x2:1,y2:1,"
-            " stop:0 #34d399, stop:1 #22d3ee); color: #0b0e17; font-weight: bold; }"
-            "QPushButton#home { background: qlineargradient(x1:0,y1:0,x2:1,y2:1,"
-            " stop:0 #6366f1, stop:1 #8b5cf6); color: #ffffff; font-weight: bold; }"
-            "QCheckBox { color: #e8edf5; }"
-            "QFrame#sep { background: #2a3a5a; }"
-        )
+        self.setWindowTitle("登录 - DTUG IDE")
+        self.setMinimumWidth(420)
+        self.setStyleSheet(dialog_qss(ui_palette()))
         self._build_ui()
-        self._set_mode("login")
+        # 启动本地回调服务器：使「在浏览器中登录」也能经 redirect 自动取回 token
+        self._server = _CallbackServer(self)
+        self._server.token_found.connect(self._on_server_token)
+        self._server.start()
 
     def _build_ui(self) -> None:
         root = QVBoxLayout(self)
         root.setSpacing(12)
         root.setContentsMargins(20, 20, 20, 20)
 
-        title = QLabel("DTUG IDE 账号")
+        title = QLabel("登录 DTUG IDE")
         title.setStyleSheet("font-size: 18px; font-weight: bold; color: #e8edf5;")
         root.addWidget(title)
 
-        # ---- 方式 2：在浏览器中用主页账号登录（完全照搬 werewolf 跳转） ----
+        hint_cf = QLabel(
+            "出于安全，登录由主页 Cloudflare 人机验证（Turnstile）保护，"
+            "凭据仅在浏览器中输入，桌面端不保存密码。"
+        )
+        hint_cf.setStyleSheet("color: #93a4c0; font-size: 12px;")
+        hint_cf.setWordWrap(True)
+        root.addWidget(hint_cf)
+
+        # 方式 1：在浏览器中用主页账号登录（带 ?redirect=...，登录后本地服务器捕获 token）
         self.home_btn = QPushButton("🌐 在浏览器中用主页账号登录")
         self.home_btn.setObjectName("home")
         self.home_btn.clicked.connect(self._open_home_login)
         root.addWidget(self.home_btn)
 
-        # ---- 方式 2b：内嵌主页登录页（QWebEngineView，登录后自动回调） ----
+        # 方式 2：内嵌主页登录页（QWebEngineView，登录后自动回调）
         self.embed_btn = QPushButton("🪟 内嵌网页中登录（推荐）")
         self.embed_btn.setObjectName("home")
         self.embed_btn.clicked.connect(self._open_embedded_login)
         root.addWidget(self.embed_btn)
+
+        sep = QLabel("")
+        sep.setObjectName("sep")
+        sep.setFixedHeight(1)
+        root.addWidget(sep)
 
         hint = QLabel("已登录主页？把浏览器控制台中 localStorage.getItem('auth_token') 的值粘贴到下方即可绑定。")
         hint.setStyleSheet("color: #93a4c0; font-size: 12px;")
@@ -130,29 +117,6 @@ class LoginDialog(QDialog):
         token_row.addWidget(self.token_bind_btn)
         root.addLayout(token_row)
 
-        # 分隔线
-        sep = QLabel("")
-        sep.setObjectName("sep")
-        sep.setFixedHeight(1)
-        root.addWidget(sep)
-
-        # ---- 方式 1：内置账号密码登录 / 注册 ----
-        form = QFormLayout()
-        form.setSpacing(10)
-
-        self.username_edit = QLineEdit()
-        self.username_edit.setPlaceholderText("用户名")
-        self.email_edit = QLineEdit()
-        self.email_edit.setPlaceholderText("邮箱（可选，注册时填写）")
-        self.password_edit = QLineEdit()
-        self.password_edit.setEchoMode(QLineEdit.EchoMode.Password)
-        self.password_edit.setPlaceholderText("密码")
-
-        form.addRow("用户名", self.username_edit)
-        form.addRow("邮箱", self.email_edit)
-        form.addRow("密码", self.password_edit)
-        root.addLayout(form)
-
         self.remember_check = QCheckBox("记住我（在此设备保持登录）")
         self.remember_check.setChecked(True)
         root.addWidget(self.remember_check)
@@ -163,47 +127,18 @@ class LoginDialog(QDialog):
         root.addWidget(self.error_label)
 
         btn_row = QHBoxLayout()
-        btn_row.setSpacing(10)
-
-        self.toggle_btn = QPushButton("切换到注册")
-        self.toggle_btn.setFlat(True)
-        self.toggle_btn.setStyleSheet("color: #4f9cf7; border: none; padding: 4px;")
-        self.toggle_btn.clicked.connect(lambda: self._set_mode("register" if self._mode == "login" else "login"))
-
+        btn_row.addStretch(1)
         self.cancel_btn = QPushButton("取消")
         self.cancel_btn.clicked.connect(self.reject)
-
-        self.submit_btn = QPushButton("登录")
-        self.submit_btn.setObjectName("primary")
-        self.submit_btn.clicked.connect(self._submit)
-
-        btn_row.addWidget(self.toggle_btn)
-        btn_row.addStretch(1)
         btn_row.addWidget(self.cancel_btn)
-        btn_row.addWidget(self.submit_btn)
         root.addLayout(btn_row)
 
-        # 回车快捷提交
-        self.username_edit.returnPressed.connect(self._submit)
-        self.password_edit.returnPressed.connect(self._submit)
-        self.email_edit.returnPressed.connect(self._submit)
         self.token_edit.returnPressed.connect(self._bind_token)
 
-    def _set_mode(self, mode: str) -> None:
-        self._mode = mode
-        if mode == "login":
-            self.email_edit.hide()
-            self.submit_btn.setText("登录")
-            self.toggle_btn.setText("没有账号？注册")
-        else:
-            self.email_edit.show()
-            self.submit_btn.setText("注册")
-            self.toggle_btn.setText("已有账号？登录")
-        self.error_label.clear()
-
     def _open_home_login(self) -> None:
-        # 完全照搬 werewolf：打开主页登录页（带 #login 锚点唤起登录弹窗）
-        QDesktopServices.openUrl(QUrl(HOME_LOGIN_URL))
+        # 打开主页登录页（带 ?redirect=...）；登录成功后由本地回调服务器
+        # （_CallbackServer）经 redirect 捕获 token —— 系统浏览器也能自动登录。
+        QDesktopServices.openUrl(build_login_url())
 
     def _open_embedded_login(self) -> None:
         # 内嵌主页登录页：在应用内用 QWebEngineView 完成登录，
@@ -219,35 +154,21 @@ class LoginDialog(QDialog):
         )
         dlg.exec()
 
+    def _on_server_token(self, token: str) -> None:
+        # 系统浏览器经 redirect 回带的 token：走与粘贴相同的校验/绑定流程。
+        self.token_edit.setText(token)
+        self._bind_token()
+
     def _set_busy(self, busy: bool, label: str = "") -> None:
         self._busy = busy
-        self.submit_btn.setEnabled(not busy)
-        self.toggle_btn.setEnabled(not busy)
-        self.cancel_btn.setEnabled(not busy)
         self.token_bind_btn.setEnabled(not busy)
         self.home_btn.setEnabled(not busy)
+        self.embed_btn.setEnabled(not busy)
+        self.cancel_btn.setEnabled(not busy)
         if busy:
-            self.submit_btn.setText(label or "处理中...")
+            self.token_bind_btn.setText(label or "校验中...")
         else:
-            self.submit_btn.setText("登录" if self._mode == "login" else "注册")
-
-    def _submit(self) -> None:
-        if self._busy:
-            return
-        username = self.username_edit.text().strip()
-        password = self.password_edit.text()
-        if not username or not password:
-            self._show_error("用户名和密码不能为空")
-            return
-
-        self._set_busy(True, "登录中..." if self._mode == "login" else "注册中...")
-        self.error_label.clear()
-        self._worker = _AuthWorker(
-            self.client, self._mode, username, password, self.email_edit.text().strip()
-        )
-        self._worker.done.connect(self._on_done)
-        self._worker.finished.connect(self._worker.deleteLater)
-        self._worker.start()
+            self.token_bind_btn.setText("绑定")
 
     def _bind_token(self) -> None:
         if self._busy:
@@ -273,30 +194,19 @@ class LoginDialog(QDialog):
 
     def _on_done(self, ok: bool, data: Dict[str, Any], mode: str) -> None:
         self._set_busy(False)
-
-        # 注册：服务端不返回 token（与网站一致），成功后引导登录
-        if mode == "register":
-            if not ok:
-                self._show_error(str(data.get("error", "注册失败")))
-                return
-            saved_username = self.username_edit.text().strip()
-            self.password_edit.clear()
-            self._set_mode("login")
-            if saved_username:
-                self.username_edit.setText(saved_username)
-            self._show_success("注册成功！请登录")
-            return
-
-        # 登录 / token 绑定
         if not ok:
-            self._show_error(str(data.get("error", "登录失败")))
+            self._show_error(str(data.get("error", "绑定失败")))
             return
         token = data.get("token")
         user = data.get("user") or {}
         if not token:
             self._show_error("服务器响应缺少 token")
             return
-        user.setdefault("username", self.username_edit.text().strip())
-
         self.login_success.emit(token, user, self.remember_check.isChecked())
         self.accept()
+
+    def done(self, r: int) -> None:
+        """对话框退出时停止本地回调服务器，释放端口。"""
+        if getattr(self, "_server", None) is not None:
+            self._server.stop()
+        super().done(r)

@@ -32,6 +32,9 @@ release/_trash/
 *.log
 DTUG_IDE_crash.log
 
+# ===== 内置 C++ 工具链（从 MSYS2 复制，体积大，不入库；由设置「捆绑内置工具链」或打包时生成） =====
+dtug_ide/resources/mingw64/
+
 # ===== 编辑器 / IDE =====
 .idea/
 .vscode/

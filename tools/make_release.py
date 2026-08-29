@@ -1,30 +1,73 @@
-"""Build a source release zip for DTUG IDE.
+"""打包 DTUG IDE 发布物（支持「精简 / 完整 / 编译器插件」三变体）。
 
-Mirrors the ``release/`` layout used by sibling projects: a self-contained
-folder with the runnable sources, docs, and license, then a zip plus a
-SHA-256 checksum file.
+版本号单一来源：dtug_ide/version.py。
 
-Usage:
+变体：
+  * 精简版 (lite)  DTUG-IDE-<ver>-windows-x64.zip
+        —— 源码 + 冻结 onedir（内置 Python，开箱即用），不含编译器。
+           适合本机已装 MSYS2/MinGW/ucrt64 或 PATH 中有 g++/clang++ 的用户。
+  * 完整版 (full)  DTUG-IDE-<ver>-windows-x64-full.7z
+        —— 精简版 + 轻量 ucrt64 GCC（已剔除文档/证书），
+           双击 DTUG-IDE.exe 即可编译运行，无需任何额外环境。
+  * 编译器插件     DTUG-IDE-<ver>-gcc-ucrt64-addon.7z
+        —— 仅 ucrt64 工具链，解压到精简版根目录即等价于完整版
+           （包内路径 _internal/dtug_ide/resources/mingw64，与 full 一致；
+             app 也会从应用根目录向上回退查找，落点不强制）。
+
+编译器来源：tools/stage_compiler.py 把本机 D:\\MSYS2\\ucrt64 暂存为
+release/_staging/mingw64（剔除 share/ etc）。该 ucrt64 已是无 python 的精简
+GCC；app 在调用时会显式传入 --sysroot 使其脱离 MSYS2 也能编译。
+
+7z 使用 py7zr（LZMA2）以获得比 zip deflate 更好的压缩率；精简版仍用 zip 以便
+Windows 原生解压。
+
+用法：
     py tools/make_release.py
+前置：先运行 PyInstaller 生成 release/DTUG-IDE 冻结 onedir。
 """
 
 from __future__ import annotations
 
+import faulthandler
 import hashlib
+import importlib.util as _ilu
 import os
 import shutil
+import sys
 import time
+import traceback
 import zipfile
 from pathlib import Path
 
+faulthandler.enable()
+
 ROOT = Path(__file__).resolve().parent.parent
 RELEASE_DIR = ROOT / "release"
-VERSION = "2.0.0"
-DIST_NAME = f"DTUG-IDE-{VERSION}-windows-x64"
-DIST_FOLDER = RELEASE_DIR / DIST_NAME
-ZIP_PATH = RELEASE_DIR / f"{DIST_NAME}.zip"
 
-# Files and directories to bundle (relative to project root).
+# 暂存的轻量编译器（由 tools/stage_compiler.py 生成）
+STAGED_COMPILER = RELEASE_DIR / "_staging" / "mingw64"
+# PyInstaller 冻结 onedir 输出
+ONEDIR_BUILD = RELEASE_DIR / "DTUG-IDE"
+
+# 版本单一来源
+def _read_version() -> str:
+    vp = ROOT / "dtug_ide" / "version.py"
+    spec = _ilu.spec_from_file_location("dtug_ide_version", vp)
+    mod = _ilu.module_from_spec(spec)  # type: ignore[arg-type]
+    spec.loader.exec_module(mod)  # type: ignore[union-attr]
+    return getattr(mod, "__version__", "2.0.0")
+
+
+VERSION = _read_version()
+LITE_NAME = f"DTUG-IDE-{VERSION}-windows-x64"
+FULL_NAME = f"DTUG-IDE-{VERSION}-windows-x64-full"
+ADDON_NAME = f"DTUG-IDE-{VERSION}-gcc-ucrt64-addon"
+
+LITE_ZIP = RELEASE_DIR / f"{LITE_NAME}.zip"
+FULL_7Z = RELEASE_DIR / f"{FULL_NAME}.7z"
+ADDON_7Z = RELEASE_DIR / f"{ADDON_NAME}.7z"
+
+# 源码打包包含
 INCLUDE_DIRS = ["dtug_ide", "docs", "tests", "tools", "packaging"]
 INCLUDE_FILES = [
     "编译.py",
@@ -37,25 +80,126 @@ INCLUDE_FILES = [
     ".gitignore",
 ]
 
-# Directories never bundled into a release.
+# 永不打包的目录
 EXCLUDE_DIRS = {".git", "__pycache__", "build", "dist", "release", ".workbuddy",
                 ".ruff_cache", ".pytest_cache", "legacy", ".venv", "venv"}
+# 不随源码打包的编译器目录（精简版不含；完整版由暂存编译器单独放入）
+EXCLUDE_SUBPATHS = {"dtug_ide/resources/mingw64"}
 
 
-def _iter_files() -> list[Path]:
-    out: list[Path] = []
+def _is_excluded(rel_parts: tuple[str, ...]) -> bool:
+    if any(part in EXCLUDE_DIRS for part in rel_parts):
+        return True
+    rel = "/".join(rel_parts)
+    return any(rel == sub or rel.startswith(sub + "/") for sub in EXCLUDE_SUBPATHS)
+
+
+def _iter_source_files() -> list[tuple[Path, Path]]:
+    out: list[tuple[Path, Path]] = []
     for d in INCLUDE_DIRS:
         base = ROOT / d
         if not base.is_dir():
             continue
         for p in base.rglob("*"):
-            if p.is_file() and not any(part in EXCLUDE_DIRS for part in p.parts):
-                out.append(p)
+            if p.is_file():
+                rel = p.relative_to(ROOT)
+                if _is_excluded(rel.parts):
+                    continue
+                out.append((p, rel))
     for f in INCLUDE_FILES:
         p = ROOT / f
         if p.is_file():
-            out.append(p)
+            out.append((p, p.relative_to(ROOT)))
     return sorted(out)
+
+
+def _copy_source(dist: Path) -> int:
+    n = 0
+    for src, rel in _iter_source_files():
+        dst = dist / rel
+        dst.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(src, dst)
+        n += 1
+    return n
+
+
+def _copy_onedir(dist: Path) -> None:
+    """把 PyInstaller 冻结 onedir 合并进 dist（同名文件以 onedir 为准）。"""
+    if not ONEDIR_BUILD.is_dir():
+        raise RuntimeError(
+            f"未找到冻结 onedir 构建：{ONEDIR_BUILD}\n"
+            "请先运行：py -m PyInstaller packaging/DTUG-IDE.spec "
+            "--distpath release --workpath build --noconfirm --clean"
+        )
+    for item in ONEDIR_BUILD.iterdir():
+        dst = dist / item.name
+        if item.is_dir():
+            shutil.copytree(item, dst, dirs_exist_ok=True)
+        else:
+            shutil.copy2(item, dst)
+
+
+def _onerr_chmod(func, p, exc):  # noqa: ANN001
+    """rmtree/remove 遇到只读文件（7z 解压产物常见）时清只读位后重试。"""
+    try:
+        os.chmod(p, 0o777)
+        func(p)
+    except OSError:
+        pass
+
+
+def _safe_delete(src: Path) -> None:
+    """尽力删除已存在的文件或目录（归档前清理上一轮产物，避免 .old_ 堆积）。
+
+    直接删除而非改名；在沙箱环境下若被拦截则静默忽略，不阻断打包流程。
+    """
+    if not src.exists():
+        return
+    try:
+        if src.is_dir():
+            shutil.rmtree(src, onexc=_onerr_chmod)
+        else:
+            os.remove(src)
+    except OSError:
+        pass
+
+
+def _zip_dir(folder: Path, zip_path: Path) -> None:
+    if zip_path.exists():
+        _safe_rename_move(zip_path)
+    with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as zf:
+        for p in sorted(folder.rglob("*")):
+            if p.is_file():
+                zf.write(p, p.relative_to(folder.parent))
+
+
+def _sevenzip_dir(folder: Path, arcname: str, archive_path: Path) -> None:
+    import py7zr
+
+    if archive_path.exists():
+        _safe_rename_move(archive_path)
+    # preset=1：full 包含冻结 onedir（数百 MB 的 DLL/.pyc），preset>=5 的
+    # LZMA2 字典过大、内存峰值过高会偶发被系统杀死（无 traceback）。preset=1
+    # 内存占用极小且仍能取得比 zip deflate 更好的压缩率。
+    filters = [{"id": py7zr.FILTER_LZMA2, "preset": 1}]
+    with py7zr.SevenZipFile(archive_path, "w", filters=filters) as zf:
+        zf.writeall(str(folder), arcname)
+
+
+def _sevenzip_addon(staged: Path, archive_path: Path) -> None:
+    """把暂存编译器打包为 _internal/dtug_ide/resources/mingw64/ 的插件包。
+
+    解压到精简版根目录即等价于完整版（与 full 内落点一致）；
+    app 内置的 bundled_gpp() 也会向上回退查找，因此解压到应用根目录同样可用。
+    """
+    import py7zr
+
+    if archive_path.exists():
+        _safe_rename_move(archive_path)
+    # preset=5：避免大目录 OOM（见 _sevenzip_dir 注释）
+    filters = [{"id": py7zr.FILTER_LZMA2, "preset": 5}]
+    with py7zr.SevenZipFile(archive_path, "w", filters=filters) as zf:
+        zf.writeall(str(staged), "_internal/dtug_ide/resources/mingw64")
 
 
 def _sha256(path: Path) -> str:
@@ -66,80 +210,95 @@ def _sha256(path: Path) -> str:
     return h.hexdigest()
 
 
+def _write_info(dist: Path, lines: str) -> None:
+    (dist / "BUILD-INFO.txt").write_text(lines, encoding="utf-8")
+
+
 def main() -> None:
-    # 受限环境(沙箱)下 rmtree 可能被安全删除拦截，故先重命名旧目录再建新目录
-    if DIST_FOLDER.exists():
-        _old = DIST_FOLDER.with_name(f"{DIST_FOLDER.name}.old_{int(time.time())}")
-        try:
-            os.rename(DIST_FOLDER, _old)
-        except OSError:
-            shutil.rmtree(DIST_FOLDER, ignore_errors=True)
-    DIST_FOLDER.mkdir(parents=True)
+    try:
+        _main_impl()
+    except Exception:
+        traceback.print_exc()
+        sys.stderr.flush()
+        raise
 
-    files = _iter_files()
-    for src in files:
-        rel = src.relative_to(ROOT)
-        dst = DIST_FOLDER / rel
-        dst.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(src, dst)
-    print(f"staged {len(files)} files into {DIST_FOLDER}")
 
-    # Bundle the frozen onedir build if it was built (PyInstaller output).
-    # In onedir mode the exe lives alongside its DLLs/ico in release/DTUG-IDE/.
-    built_dir = ROOT / "release" / "DTUG-IDE"
-    if built_dir.is_dir():
-        for item in built_dir.iterdir():
-            dst = DIST_FOLDER / item.name
-            if item.is_dir():
-                shutil.copytree(item, dst, dirs_exist_ok=True)
-            else:
-                shutil.copy2(item, dst)
-        print(f"bundled onedir build from {built_dir}")
+def _main_impl() -> None:
+    if not STAGED_COMPILER.is_dir():
+        raise RuntimeError(
+            f"未找到暂存编译器：{STAGED_COMPILER}\n"
+            "请先运行：py tools/stage_compiler.py"
+        )
 
-    # Write a release BUILD-INFO.txt
-    (DIST_FOLDER / "BUILD-INFO.txt").write_text(
+    lite = RELEASE_DIR / LITE_NAME
+    full = RELEASE_DIR / FULL_NAME
+
+    # ---- 1) 精简版（源码 + 冻结 onedir，无编译器）----
+    _safe_delete(lite)
+    lite.mkdir(parents=True)
+    n = _copy_source(lite)
+    _copy_onedir(lite)
+    _write_info(
+        lite,
         f"DTUG IDE {VERSION}\n"
-        f"Build type: source + frozen onedir build (DTUG-IDE.exe + dependencies)\n"
-        f"Python: >=3.10\n"
-        f"License: MIT\n",
-        encoding="utf-8",
+        f"Variant: lite (no bundled compiler)\n"
+        f"Build: source + frozen onedir (Python 内置，开箱即用)\n"
+        f"Compiler: 需本机 MSYS2/MinGW/ucrt64 或 PATH 中的 g++/clang++\n"
+        f"Python: >=3.10 (frozen)\nLicense: MIT\n",
     )
+    _zip_dir(lite, LITE_ZIP)
+    print(f"[lite] staged {n} source files + onedir -> {LITE_ZIP}", flush=True)
 
-    # Zip the folder
-    # 注意：不要直接 unlink 旧 zip —— 沙箱 safe-delete 会拦截 os.remove。
-    # 改为重命名到 _trash/ 规避（与项目其它构建脚本一致）。
-    if ZIP_PATH.exists():
-        import time as _time
-        _trash = RELEASE_DIR / "_trash"
-        _trash.mkdir(exist_ok=True)
-        _ts = _time.strftime("%H%M%S")
-        ZIP_PATH.rename(_trash / f"{ZIP_PATH.stem}_{_ts}{ZIP_PATH.suffix}")
-    with zipfile.ZipFile(ZIP_PATH, "w", zipfile.ZIP_DEFLATED) as zf:
-        for p in sorted(DIST_FOLDER.rglob("*")):
-            if p.is_file():
-                zf.write(p, p.relative_to(DIST_FOLDER.parent))
-    print(f"wrote {ZIP_PATH} ({ZIP_PATH.stat().st_size} bytes)")
-
-    # Checksum file for the zip
-    sha = _sha256(ZIP_PATH)
-    (RELEASE_DIR / f"{DIST_NAME}.zip.sha256").write_text(
-        f"{sha}  {ZIP_PATH.name}\n", encoding="utf-8"
+    # ---- 2) 完整版（精简版 + 轻量 ucrt64 编译器）----
+    _safe_delete(full)
+    full.mkdir(parents=True)
+    # 直接以精简版内容为基础
+    for item in lite.iterdir():
+        dst = full / item.name
+        if item.is_dir():
+            shutil.copytree(item, dst, dirs_exist_ok=True)
+        else:
+            shutil.copy2(item, dst)
+    print("[full] lite copied, adding compiler...", flush=True)
+    # 冻结 onedir 中模块位于 _internal/dtug_ide，故内置编译器必须落在
+    # _internal/dtug_ide/resources/mingw64（bundled_gpp 据此查找）。
+    compiler_dst = full / "_internal" / "dtug_ide" / "resources" / "mingw64"
+    shutil.copytree(STAGED_COMPILER, compiler_dst, dirs_exist_ok=True)
+    print("[full] compiler copied, zipping...", flush=True)
+    _write_info(
+        full,
+        f"DTUG IDE {VERSION}\n"
+        f"Variant: full (bundled lightweight ucrt64 GCC)\n"
+        f"Build: source + frozen onedir (Python 内置) + ucrt64 工具链\n"
+        f"Compiler: 内置 ucrt64 g++，双击 DTUG-IDE.exe 即可编译运行\n"
+        f"Python: >=3.10 (frozen)\nLicense: MIT\n",
     )
-    print(f"sha256: {sha}")
+    _sevenzip_dir(full, FULL_NAME, FULL_7Z)
+    print(f"[full] lite + ucrt64 -> {FULL_7Z}", flush=True)
+    # 归档完成，清理未压缩工作目录（精简版内容已并入 full；full 已归档）
+    _safe_delete(lite)
+    _safe_delete(full)
 
-    # Also checksum the wheel, sdist, zip and bundled exe if present
+    # ---- 3) 编译器插件包（仅 ucrt64）----
+    _safe_delete(ADDON_7Z)
+    _sevenzip_addon(STAGED_COMPILER, ADDON_7Z)
+    print(f"[addon] ucrt64 only -> {ADDON_7Z}", flush=True)
+
+    # ---- 校验和 ----
     sums = []
-    for p in sorted((ROOT / "dist").glob("*")) if (ROOT / "dist").is_dir() else []:
-        if p.is_file():
-            sums.append(f"{_sha256(p)}  dist/{p.name}\n")
-    if ZIP_PATH.is_file():
-        sums.append(f"{_sha256(ZIP_PATH)}  {ZIP_PATH.name}\n")
-    bundled_exe = DIST_FOLDER / "DTUG-IDE.exe"
-    if bundled_exe.is_file():
-        sums.append(f"{_sha256(bundled_exe)}  {DIST_NAME}/DTUG-IDE.exe\n")
+    for art in (LITE_ZIP, FULL_7Z, ADDON_7Z):
+        if art.is_file():
+            sums.append(f"{_sha256(art)}  {art.name}\n")
     if sums:
         (RELEASE_DIR / "SHA256SUMS.txt").write_text("".join(sums), encoding="utf-8")
-        print(f"wrote SHA256SUMS.txt ({len(sums)} artifacts)")
+        print(f"[sha] wrote SHA256SUMS.txt ({len(sums)} artifacts)", flush=True)
+
+    # 体积概览
+    print("\n=== 产物体积 ===", flush=True)
+    for art in (LITE_ZIP, FULL_7Z, ADDON_7Z):
+        if art.is_file():
+            mb = art.stat().st_size / (1024 * 1024)
+            print(f"  {art.name}: {mb:.1f} MB", flush=True)
 
 
 if __name__ == "__main__":

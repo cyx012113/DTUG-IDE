@@ -4,32 +4,75 @@
 （非 cyx012113.top）redirect 时会把 token 附加到 URL 上（见 D:\\Desktop\\网站\\main
 的 appendTokenToExternalRedirect）。本模块加载主页登录页，拦截跳转到
 http://127.0.0.1:<PORT>/callback?token=... 的导航，从而拿到 token 完成鉴权。
+
+关键修复（内嵌登录页打不开 / 人机验证失败）：
+  * 默认 QWebEngineView 的 User-Agent 含 "QtWebEngine" 字样，会被 Cloudflare
+    的人机验证（Turnstile）与「浏览器完整性检查」拦截。这里在 userAgentForUrl 中
+    改写为常规桌面 Chrome UA，使内嵌浏览器通过校验。
+  * 显式开启 JavaScript / LocalStorage / WebGL 等必需的 Web 特性。
+  * 监听加载失败与渲染进程异常，给出明确提示与「在浏览器中打开 / 刷新」回退。
 """
 
 from __future__ import annotations
 
+import http.server
+import threading
 from typing import Any, Dict, Optional
 from urllib.parse import urlparse, parse_qs, quote
 
 from PyQt6.QtCore import QThread, QUrl, pyqtSignal
+from PyQt6.QtGui import QDesktopServices
 from PyQt6.QtWidgets import (
     QDialog, QHBoxLayout, QLabel, QPushButton, QVBoxLayout,
 )
-from PyQt6.QtWebEngineCore import QWebEnginePage
+from PyQt6.QtWebEngineCore import QWebEnginePage, QWebEngineSettings
 from PyQt6.QtWebEngineWidgets import QWebEngineView
 
-from .auth import AuthClient, HOME_LOGIN_URL
+from .auth import AuthClient, HOME_LOGIN_URL, HOME_URL
+from .theme import dialog_qss, ui_palette
 
 CALLBACK_PORT = 8731
 CALLBACK_HOST = "127.0.0.1"
 CALLBACK_PATH = "/callback"
 CALLBACK_URL = f"http://{CALLBACK_HOST}:{CALLBACK_PORT}{CALLBACK_PATH}"
 
+# 常规桌面 Chrome UA：去掉 QtWebEngine 标记，避免被 Cloudflare 误判为机器人。
+CHROME_UA = (
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+    "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
+)
+
+
+def build_login_url() -> QUrl:
+    """构造主页登录 URL（内嵌网页与系统浏览器共用，确保都能经 redirect 回带 token）。
+
+    关键点：``?redirect=`` 必须放在 ``#login`` 片段「之前」（查询串先于片段），
+    否则主页从 ``window.location.search`` 读不到 redirect，token 永远不会被附加。
+    redirect 内的 ``:`` 与 ``/`` 必须保留（safe=\":/\"），否则主页
+    appendTokenToExternalRedirect 里的 ``new URL(redirect)`` 会把它误判为同域而不附加 token。
+    """
+    return QUrl(f"{HOME_URL}/?redirect=" + quote(CALLBACK_URL, safe=":/") + "#login")
+
 
 class _CallbackPage(QWebEnginePage):
     """拦截跳转到本地回调 URL 的导航，从中提取 token（不真正发起请求）。"""
 
     token_found = pyqtSignal(str)
+    load_failed = pyqtSignal(str)
+
+    def __init__(self, parent=None) -> None:
+        super().__init__(parent)
+        # 关键：用真实 Chrome UA，绕过 Cloudflare 对 QtWebEngine 的标记
+        settings = self.settings()
+        settings.setAttribute(QWebEngineSettings.WebAttribute.JavascriptEnabled, True)
+        settings.setAttribute(QWebEngineSettings.WebAttribute.LocalStorageEnabled, True)
+        settings.setAttribute(QWebEngineSettings.WebAttribute.WebGLEnabled, True)
+        settings.setAttribute(QWebEngineSettings.WebAttribute.ScrollAnimatorEnabled, True)
+        settings.setAttribute(QWebEngineSettings.WebAttribute.ErrorPageEnabled, True)
+        # 允许第三方（challenges.cloudflare.com）加载 Turnstile 资源（默认即允许，显式保持开启）
+
+    def userAgentForUrl(self, url: QUrl) -> str:  # noqa: N802
+        return CHROME_UA
 
     def acceptNavigationRequest(self, url: QUrl, nav_type, isMainFrame: bool) -> bool:  # noqa: N802
         parsed = urlparse(url.toString())
@@ -40,6 +83,72 @@ class _CallbackPage(QWebEnginePage):
                 self.token_found.emit(tokens[0])
             return False  # token 已捕获，取消该导航
         return super().acceptNavigationRequest(url, nav_type, isMainFrame)
+
+
+class _CallbackServer(QThread):
+    """本地回调服务器：监听 127.0.0.1:<CALLBACK_PORT>，捕获「系统浏览器」经
+    redirect 跳回的 ``?token=...``。
+
+    内嵌 QWebEngine 路径仍由 ``_CallbackPage.acceptNavigationRequest`` 拦截
+    （不会真正发起请求），两条路径互斥、互不干扰：
+      - 内嵌网页登录：导航被拦截 -> token_found 由页面发出；
+      - 系统浏览器登录：真实导航到 localhost -> 本服务器收到请求并捕获 token。
+    """
+
+    token_found = pyqtSignal(str)
+
+    def __init__(self, parent=None) -> None:
+        super().__init__(parent)
+        self._server: "Optional[http.server.ThreadingHTTPServer]" = None
+
+    def run(self) -> None:
+        captured: Dict[str, str] = {}
+
+        class _Handler(http.server.BaseHTTPRequestHandler):
+            def do_GET(self) -> None:  # noqa: N802
+                parsed = urlparse(self.path)
+                if parsed.path == CALLBACK_PATH:
+                    qs = parse_qs(parsed.query)
+                    tok = qs.get("token")
+                    if tok:
+                        captured["token"] = tok[0]
+                        self.send_response(200)
+                        self.send_header("Content-Type", "text/html; charset=utf-8")
+                        self.end_headers()
+                        self.wfile.write(
+                            "<html><head><meta charset='utf-8'></head><body>"
+                            "<h2>DTUG IDE</h2><p>登录成功，token 已获取，可关闭此页面。</p>"
+                            "</body></html>".encode("utf-8")
+                        )
+                        # 捕获后关闭服务器（在另一线程触发，避免阻塞 handler）
+                        threading.Thread(target=self.server.shutdown, daemon=True).start()
+                        return
+                self.send_response(200)
+                self.send_header("Content-Type", "text/html; charset=utf-8")
+                self.end_headers()
+                self.wfile.write(b"<html><body>DTUG IDE callback</body></html>")
+
+            def log_message(self, *_a) -> None:  # noqa: N802
+                pass
+
+        try:
+            srv = http.server.ThreadingHTTPServer((CALLBACK_HOST, CALLBACK_PORT), _Handler)
+        except OSError:
+            # 端口被占用（如上一次对话框未释放）：退化为仅内嵌路径可用
+            return
+        self._server = srv
+        srv.serve_forever()
+        if captured.get("token"):
+            self.token_found.emit(captured["token"])
+
+    def stop(self) -> None:
+        srv = self._server
+        if srv is not None:
+            try:
+                srv.shutdown()
+                srv.server_close()
+            except Exception:
+                pass
 
 
 class _TokenValidateWorker(QThread):
@@ -71,14 +180,12 @@ class EmbeddedLoginDialog(QDialog):
         self._token: Optional[str] = None
         self.setWindowTitle("在主页登录 - DTUG IDE")
         self.resize(960, 680)
-        self.setStyleSheet(
-            "QDialog { background: #0b0e17; }"
-            "QLabel { color: #e8edf5; }"
-            "QPushButton { background: #1a2332; color: #e8edf5;"
-            " border: 1px solid #2a3a5a; border-radius: 6px; padding: 8px 14px; }"
-            "QPushButton:hover { border-color: #4f9cf7; }"
-        )
+        self.setStyleSheet(dialog_qss(ui_palette()))
         self._build_ui()
+        # 启动本地回调服务器：使「系统浏览器登录」也能经 redirect 自动取回 token
+        self._server = _CallbackServer(self)
+        self._server.token_found.connect(self._on_token)
+        self._server.start()
         self._load()
 
     def _build_ui(self) -> None:
@@ -90,36 +197,84 @@ class EmbeddedLoginDialog(QDialog):
         self.page = _CallbackPage(self.view)
         self.view.setPage(self.page)
         self.page.token_found.connect(self._on_token)
+        self.page.loadFinished.connect(self._on_load_finished)
+        self.page.renderProcessTerminated.connect(self._on_render_terminated)
         root.addWidget(self.view, 1)
 
         bar = QHBoxLayout()
         bar.setContentsMargins(10, 8, 10, 8)
-        self.status = QLabel("请在上方主页完成登录；登录成功后将自动返回本应用。")
-        self.status.setStyleSheet("color: #93a4c0;")
+        self.status = QLabel("正在加载主页登录页…（若长时间无响应或卡在验证，可点右侧按钮换用浏览器登录）")
+        self.status.setStyleSheet(f"color: {ui_palette()['text2']};")
         self.status.setWordWrap(True)
         bar.addWidget(self.status, 1)
+
+        self.refresh_btn = QPushButton("刷新")
+        self.refresh_btn.clicked.connect(self._load)
+        bar.addWidget(self.refresh_btn)
+
+        self.browser_btn = QPushButton("🌐 在浏览器中打开")
+        self.browser_btn.setObjectName("home")
+        self.browser_btn.clicked.connect(self._open_in_browser)
+        bar.addWidget(self.browser_btn)
+
         self.cancel_btn = QPushButton("取消")
         self.cancel_btn.clicked.connect(self.reject)
         bar.addWidget(self.cancel_btn)
         root.addLayout(bar)
 
     def _load(self) -> None:
-        url = QUrl(HOME_LOGIN_URL + "?redirect=" + quote(CALLBACK_URL, safe="") + "#login")
-        self.view.load(url)
+        self.status.setText("正在加载主页登录页…")
+        # 注意：redirect 参数必须保留 : 与 /，否则主页 appendTokenToExternalRedirect
+        # 里的 new URL(redirect) 会把它误判为同域（cyx012113.top）而不附加 token，
+        # 导致桌面端永远拿不到 token。这里只编码 ? # 等少数字符。
+        # 关键：?redirect= 必须放在 #login 片段「之前」（查询串先于片段），
+        # 否则主页从 window.location.search 读不到 redirect，token 永远不会被附加，
+        # 桌面端也就无法自动获取 token。
+        self.view.load(self._build_login_url())
+
+    def _build_login_url(self) -> QUrl:
+        """构造主页登录 URL（委托模块级 build_login_url）。"""
+        return build_login_url()
+
+    def _open_in_browser(self) -> None:
+        # 用与内嵌相同的 redirect URL：主页登录成功后会把 token 附加到
+        # http://127.0.0.1:8731/callback?token=...，本机回调服务器（_CallbackServer）
+        # 即可捕获，于是「系统浏览器也能用 redirect 自动登录」。
+        QDesktopServices.openUrl(self._build_login_url())
+        self.status.setText("已用系统浏览器打开主页，请完成登录；成功后将自动返回本应用。")
+
+    def _on_load_finished(self, ok: bool) -> None:
+        if ok:
+            self.status.setText("请在上方主页完成登录；登录成功后将自动返回本应用。")
+        else:
+            self.status.setText("⚠️ 主页加载失败（网络/拦截）。可点「刷新」重试，或「在浏览器中打开」登录后粘贴 token。")
+
+    def _on_render_terminated(self, _status, _code) -> None:
+        self.status.setText("⚠️ 内嵌浏览器渲染进程异常。建议点「在浏览器中打开」完成登录。")
 
     def _on_token(self, token: str) -> None:
+        if self._token is not None:
+            return  # 已被内嵌/系统浏览器任一路径捕获，忽略重复信号
         self._token = token
         self.status.setText("已获取到 token，正在校验身份...")
         self.cancel_btn.setEnabled(False)
+        self.refresh_btn.setEnabled(False)
         self._worker = _TokenValidateWorker(self.client, token)
         self._worker.done.connect(self._on_validated)
         self._worker.finished.connect(self._worker.deleteLater)
         self._worker.start()
 
+    def done(self, r: int) -> None:
+        """对话框退出（accept / reject / 关闭）时停止本地回调服务器，释放端口。"""
+        if getattr(self, "_server", None) is not None:
+            self._server.stop()
+        super().done(r)
+
     def _on_validated(self, ok: bool, user: Optional[Dict[str, Any]]) -> None:
         if not ok or not isinstance(user, dict):
             self.status.setText("❌ token 校验失败，请重试或改用其他登录方式。")
             self.cancel_btn.setEnabled(True)
+            self.refresh_btn.setEnabled(True)
             self._load()  # 重新加载登录页
             return
         user.setdefault("username", "")

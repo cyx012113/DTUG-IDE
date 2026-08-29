@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import List, Optional
 
 from PyQt6.QtCore import Qt, QSettings, QSize, QThread, pyqtSignal
-from PyQt6.QtGui import QAction, QColor, QFont, QIcon, QKeySequence
+from PyQt6.QtGui import QAction, QBrush, QColor, QFont, QIcon, QKeySequence, QShortcut
 from PyQt6.QtWidgets import (
     QApplication, QComboBox, QDialog, QDialogButtonBox, QFileDialog,
     QFormLayout, QGroupBox, QHBoxLayout, QHeaderView, QLabel, QLineEdit,
@@ -25,8 +25,19 @@ from PyQt6.QtWidgets import (
 from .auth import AuthClient
 from .compiler import Compiler, CompileResult
 from .editor import CodeEditor
-from .judge import JudgeEngine, JudgeResult, TestCase, TestResult
+from .formatter import format_cpp
+from .interactive_run import InteractiveRunDialog
+from .data_generator import DataGenDialog
+from .judge import JudgeControl, JudgeEngine, JudgeResult, TestCase, TestResult
 from .login_dialog import LoginDialog
+from .settings_dialog import SettingsDialog
+from .theme import (
+    button_danger_qss, button_green_qss, button_neutral_qss,
+    console_qss, dialog_qss, get_compile_flags, get_compiler_cmd, get_cpp_std,
+    get_link_flags, get_run_mode, group_qss, main_window_global_qss,
+    plain_edit_qss, splitter_qss, statusbar_qss, tab_qss, toolbar_qss,
+    tree_qss, ui_palette,
+)
 from .utils import (
     clean_temp_dir, ensure_dir, find_app_icon, find_compiler_candidates,
     is_valid_cpp_filename, read_file_text, safe_remove, write_file_text,
@@ -37,18 +48,44 @@ class JudgeWorker(QThread):
     """Background worker for judging."""
     finished = pyqtSignal(object)
     progress = pyqtSignal(int, int)  # current, total
+    result_ready = pyqtSignal(object, int)  # TestResult, index（每完成一个用例即发出）
 
-    def __init__(self, engine: JudgeEngine, code: str, tests: List[TestCase], time_limit: float, memory_limit: float) -> None:
+    def __init__(self, engine: JudgeEngine, code: str, tests: List[TestCase], time_limit: float, memory_limit: float, ignore_case: bool = False, control: Optional[JudgeControl] = None) -> None:
         super().__init__()
         self.engine = engine
         self.code = code
         self.tests = tests
         self.time_limit = time_limit
         self.memory_limit = memory_limit
+        self.ignore_case = ignore_case
+        self.control = control or JudgeControl()
 
     def run(self) -> None:
-        result = self.engine.judge(self.code, self.tests, self.time_limit, self.memory_limit)
+        def _on_result(res: "TestResult", idx: int) -> None:
+            self.result_ready.emit(res, idx)
+
+        result = self.engine.judge(
+            self.code, self.tests, self.time_limit, self.memory_limit,
+            on_result=_on_result, control=self.control, ignore_case=self.ignore_case,
+        )
         self.finished.emit(result)
+
+    # ---- 评测控制：终止 / 暂停 / 继续 ----
+    def request_stop(self) -> None:
+        """请求停止：置标志并立即终止正在运行的子进程。"""
+        self.control.stop = True
+        try:
+            self.engine.compiler.kill_active()
+        except Exception:
+            pass
+
+    def request_pause(self) -> None:
+        """请求暂停：当前用例跑完后挂起（不杀进程）。"""
+        self.control.pause = True
+
+    def request_resume(self) -> None:
+        """请求继续：解除暂停。"""
+        self.control.pause = False
 
 
 class CompileRunWorker(QThread):
@@ -56,16 +93,19 @@ class CompileRunWorker(QThread):
     compile_done = pyqtSignal(object)
     run_done = pyqtSignal(object)
 
-    def __init__(self, compiler: Compiler, code: str, input_data: str = "", run_in_term: bool = False) -> None:
+    def __init__(self, compiler: Compiler, code: str, input_data: str = "", run_in_term: bool = False, compile_only: bool = False) -> None:
         super().__init__()
         self.compiler = compiler
         self.code = code
         self.input_data = input_data
         self.run_in_term = run_in_term
+        self.compile_only = compile_only
 
     def run(self) -> None:
         comp = self.compiler.compile(self.code)
         self.compile_done.emit(comp)
+        if self.compile_only:
+            return
         if comp.success and comp.exe_path and not self.run_in_term:
             run = self.compiler.run_sandboxed(comp.exe_path, self.input_data, time_limit=10.0, memory_limit_mb=512.0)
             self.compiler.cleanup(comp.exe_path)
@@ -113,6 +153,7 @@ class MainWindow(QMainWindow):
         clean_temp_dir(self.temp_dir)
 
         self.compiler = Compiler(self.temp_dir)
+        self._apply_compiler_options()
         self.judge_engine = JudgeEngine(self.compiler)
 
         self.tabs: List[FileTab] = []
@@ -122,11 +163,16 @@ class MainWindow(QMainWindow):
         self._build_menu()
         self._build_toolbar()
         self._connect_events()
+        self._setup_shortcuts()
         self._new_file()
         self._restore_settings()
         self._init_auth()
 
     def _build_ui(self) -> None:
+        self._ui = ui_palette()
+        # 界面字体统一由 QApplication 设置（不在 QSS 里写 QWidget font-family，
+        # 否则会覆盖代码编辑器/控制台的等宽字体，导致「改字体无效」）
+        QApplication.setFont(QFont("Segoe UI", 10))
         central = QWidget()
         self.setCentralWidget(central)
         main_layout = QHBoxLayout(central)
@@ -140,17 +186,12 @@ class MainWindow(QMainWindow):
         self.tab_widget = QTabWidget()
         self.tab_widget.setTabsClosable(True)
         self.tab_widget.setMovable(True)
-        self.tab_widget.setStyleSheet("""
-            QTabWidget::pane { border: 1px solid #2a3a5a; border-radius: 8px; background: #0d1117; }
-            QTabBar::tab { background: #111827; color: #94a9c9; padding: 6px 14px; border-top-left-radius: 6px; border-top-right-radius: 6px; }
-            QTabBar::tab:selected { background: #1a2332; color: #e8edf5; }
-            QTabBar::tab:hover { background: #1a2332; }
-        """)
+        self.tab_widget.setStyleSheet(tab_qss(self._ui))
         left.addWidget(self.tab_widget, stretch=3)
 
         # Console
         console_group = QGroupBox("控制台")
-        console_group.setStyleSheet("QGroupBox { color: #94a9c9; border: 1px solid #2a3a5a; border-radius: 8px; margin-top: 8px; } QGroupBox::title { subcontrol-origin: margin; left: 10px; padding: 0 4px; }")
+        console_group.setStyleSheet(group_qss(self._ui))
         console_layout = QVBoxLayout(console_group)
         console_layout.setContentsMargins(4, 8, 4, 4)
         self.console = QPlainTextEdit()
@@ -158,7 +199,7 @@ class MainWindow(QMainWindow):
         self.console.setMaximumBlockCount(5000)
         font = QFont("Consolas", 10)
         self.console.setFont(font)
-        self.console.setStyleSheet("QPlainTextEdit { background: #0d1117; color: #e8edf5; border: none; }")
+        self.console.setStyleSheet(console_qss(self._ui))
         console_layout.addWidget(self.console)
         left.addWidget(console_group, stretch=1)
 
@@ -171,7 +212,7 @@ class MainWindow(QMainWindow):
 
         # Judge controls
         judge_group = QGroupBox("评测控制台")
-        judge_group.setStyleSheet("QGroupBox { color: #94a9c9; border: 1px solid #2a3a5a; border-radius: 8px; margin-top: 8px; } QGroupBox::title { subcontrol-origin: margin; left: 10px; padding: 0 4px; }")
+        judge_group.setStyleSheet(group_qss(self._ui))
         judge_layout = QVBoxLayout(judge_group)
         judge_layout.setContentsMargins(8, 8, 8, 8)
 
@@ -190,13 +231,36 @@ class MainWindow(QMainWindow):
         limits_layout.addStretch()
         judge_layout.addLayout(limits_layout)
 
+        # 比较选项 + 评测控制（暂停 / 继续 / 停止）
+        opt_layout = QHBoxLayout()
+        self.ignore_case_check = QCheckBox("忽略大小写")
+        self.ignore_case_check.setToolTip("比较输出时忽略大小写；「去行末空格、去末尾空行」始终生效。")
+        opt_layout.addWidget(self.ignore_case_check)
+        opt_layout.addStretch()
+        judge_layout.addLayout(opt_layout)
+
+        ctrl_layout = QHBoxLayout()
+        self.pause_btn = QPushButton("⏸ 暂停")
+        self.pause_btn.setStyleSheet(button_neutral_qss(self._ui))
+        self.pause_btn.setEnabled(False)
+        self.resume_btn = QPushButton("▶ 继续")
+        self.resume_btn.setStyleSheet(button_neutral_qss(self._ui))
+        self.resume_btn.setEnabled(False)
+        self.stop_btn = QPushButton("⏹ 停止")
+        self.stop_btn.setStyleSheet(button_danger_qss(self._ui))
+        self.stop_btn.setEnabled(False)
+        ctrl_layout.addWidget(self.pause_btn)
+        ctrl_layout.addWidget(self.resume_btn)
+        ctrl_layout.addWidget(self.stop_btn)
+        judge_layout.addLayout(ctrl_layout)
+
         btn_layout = QHBoxLayout()
         self.import_btn = QPushButton("📁 导入文件夹")
-        self.import_btn.setStyleSheet("QPushButton { background: #1a2332; color: #e8edf5; border: 1px solid #2a3a5a; border-radius: 6px; padding: 6px 12px; } QPushButton:hover { border-color: #4f9cf7; }")
+        self.import_btn.setStyleSheet(button_neutral_qss(self._ui))
         self.judge_btn = QPushButton("▶ 开始评测")
-        self.judge_btn.setStyleSheet("QPushButton { background: qlineargradient(x1:0,y1:0,x2:1,y2:1,stop:0 #34d399,stop:1 #22d3ee); color: #0b0e17; border-radius: 6px; padding: 6px 16px; font-weight: bold; } QPushButton:hover { background: qlineargradient(x1:0,y1:0,x2:1,y2:1,stop:0 #4ade80,stop:1 #2dd4bf); }")
+        self.judge_btn.setStyleSheet(button_green_qss(self._ui))
         self.clear_tests_btn = QPushButton("🗑️ 清空")
-        self.clear_tests_btn.setStyleSheet("QPushButton { background: #1a2332; color: #e8edf5; border: 1px solid #2a3a5a; border-radius: 6px; padding: 6px 12px; } QPushButton:hover { border-color: #f87171; }")
+        self.clear_tests_btn.setStyleSheet(button_danger_qss(self._ui))
         btn_layout.addWidget(self.import_btn)
         btn_layout.addWidget(self.judge_btn)
         btn_layout.addWidget(self.clear_tests_btn)
@@ -209,12 +273,7 @@ class MainWindow(QMainWindow):
         self.test_list.setColumnWidth(1, 50)
         self.test_list.setColumnWidth(2, 60)
         self.test_list.setColumnWidth(3, 60)
-        self.test_list.setStyleSheet("""
-            QTreeWidget { background: #111827; color: #e8edf5; border: 1px solid #2a3a5a; border-radius: 6px; }
-            QTreeWidget::item { padding: 4px; border-bottom: 1px solid rgba(255,255,255,0.05); }
-            QTreeWidget::item:selected { background: rgba(79,156,247,0.15); }
-            QHeaderView::section { background: #1a2332; color: #94a9c9; padding: 4px; border: none; }
-        """)
+        self.test_list.setStyleSheet(tree_qss(self._ui))
         self.test_list.setRootIsDecorated(False)
         judge_layout.addWidget(self.test_list)
 
@@ -227,28 +286,28 @@ class MainWindow(QMainWindow):
 
         # Quick test editor
         quick_group = QGroupBox("快速样例")
-        quick_group.setStyleSheet("QGroupBox { color: #94a9c9; border: 1px solid #2a3a5a; border-radius: 8px; margin-top: 8px; } QGroupBox::title { subcontrol-origin: margin; left: 10px; padding: 0 4px; }")
+        quick_group.setStyleSheet(group_qss(self._ui))
         quick_layout = QVBoxLayout(quick_group)
         quick_layout.setContentsMargins(8, 8, 8, 8)
 
         quick_layout.addWidget(QLabel("输入:"))
         self.quick_input = QPlainTextEdit()
         self.quick_input.setMaximumBlockCount(100)
-        self.quick_input.setStyleSheet("QPlainTextEdit { background: #0d1117; color: #e8edf5; border: 1px solid #2a3a5a; border-radius: 4px; }")
+        self.quick_input.setStyleSheet(plain_edit_qss(self._ui))
         self.quick_input.setPlaceholderText("stdin")
         quick_layout.addWidget(self.quick_input)
 
         quick_layout.addWidget(QLabel("期望输出:"))
         self.quick_expected = QPlainTextEdit()
         self.quick_expected.setMaximumBlockCount(100)
-        self.quick_expected.setStyleSheet("QPlainTextEdit { background: #0d1117; color: #e8edf5; border: 1px solid #2a3a5a; border-radius: 4px; }")
+        self.quick_expected.setStyleSheet(plain_edit_qss(self._ui))
         self.quick_expected.setPlaceholderText("expected (optional)")
         quick_layout.addWidget(self.quick_expected)
 
         quick_btn_layout = QHBoxLayout()
         self.add_quick_btn = QPushButton("➕ 添加样例")
         self.run_quick_btn = QPushButton("▶ 运行当前")
-        self.run_quick_btn.setStyleSheet("QPushButton { background: #34d399; color: #0b0e17; border-radius: 6px; padding: 4px 12px; font-weight: bold; }")
+        self.run_quick_btn.setStyleSheet(button_green_qss(self._ui))
         quick_btn_layout.addWidget(self.add_quick_btn)
         quick_btn_layout.addWidget(self.run_quick_btn)
         quick_layout.addLayout(quick_btn_layout)
@@ -265,13 +324,13 @@ class MainWindow(QMainWindow):
         splitter.addWidget(right_widget)
         splitter.setStretchFactor(0, 3)
         splitter.setStretchFactor(1, 1)
-        splitter.setStyleSheet("QSplitter::handle { background: #2a3a5a; }")
+        splitter.setStyleSheet(splitter_qss(self._ui))
         main_layout.addWidget(splitter)
 
         # Status bar
         self.status_bar = QStatusBar()
         self.setStatusBar(self.status_bar)
-        self.status_bar.setStyleSheet("QStatusBar { background: #111827; color: #5a7a9a; border-top: 1px solid #2a3a5a; }")
+        self.status_bar.setStyleSheet(statusbar_qss(self._ui))
         self.status_label = QLabel("就绪")
         self.status_cursor = QLabel("行 1, 列 1")
         self.status_file = QLabel("未命名.cpp")
@@ -281,22 +340,10 @@ class MainWindow(QMainWindow):
         self.status_bar.addPermanentWidget(self.status_compiler)
         self.status_bar.addPermanentWidget(self.status_label)
         self.user_status_label = QLabel("未登录")
-        self.user_status_label.setStyleSheet("color: #5a7a9a;")
+        self.user_status_label.setStyleSheet(f"color: {self._ui['text3']};")
         self.status_bar.addPermanentWidget(self.user_status_label)
 
-        self.setStyleSheet("""
-            QMainWindow { background: #0b0e17; }
-            QWidget { font-family: 'Segoe UI', system-ui, sans-serif; }
-            QMenuBar { background: #111827; color: #e8edf5; }
-            QMenuBar::item:selected { background: #1a2332; }
-            QMenu { background: #111827; color: #e8edf5; border: 1px solid #2a3a5a; }
-            QMenu::item:selected { background: #1a2332; }
-            QLabel { color: #e8edf5; }
-            QLineEdit { background: #0d1117; color: #e8edf5; border: 1px solid #2a3a5a; border-radius: 4px; padding: 4px; }
-            QSpinBox, QDoubleSpinBox { background: #0d1117; color: #e8edf5; border: 1px solid #2a3a5a; border-radius: 4px; padding: 4px; }
-            QPushButton { background: #1a2332; color: #e8edf5; border: 1px solid #2a3a5a; border-radius: 6px; padding: 6px 12px; }
-            QPushButton:hover { border-color: #4f9cf7; }
-        """)
+        self.setStyleSheet(main_window_global_qss(self._ui))
 
     def _build_menu(self) -> None:
         menubar = self.menuBar()
@@ -318,7 +365,11 @@ class MainWindow(QMainWindow):
         file_menu.addAction(self.exit_act)
 
         run_menu = menubar.addMenu("运行 (&R)")
-        self.compile_run_act = QAction("编译运行 (&R)", self)
+        self.compile_act = QAction("编译 (F9)", self)
+        run_menu.addAction(self.compile_act)
+        self.run_act = QAction("运行 (F10)", self)
+        run_menu.addAction(self.run_act)
+        self.compile_run_act = QAction("编译并运行 (F11)", self)
         self.compile_run_act.setShortcut(QKeySequence("Ctrl+Return"))
         run_menu.addAction(self.compile_run_act)
         self.compile_run_term_act = QAction("编译运行 (独立终端)", self)
@@ -327,29 +378,48 @@ class MainWindow(QMainWindow):
         self.judge_act = QAction("开始评测 (&J)", self)
         self.judge_act.setShortcut(QKeySequence("Shift+Return"))
         run_menu.addAction(self.judge_act)
+        self.interactive_act = QAction("交互运行 (&I)", self)
+        self.interactive_act.setShortcut(QKeySequence("Ctrl+Shift+R"))
+        run_menu.addAction(self.interactive_act)
+        self.datagen_act = QAction("数据生成 (&G)", self)
+        run_menu.addAction(self.datagen_act)
 
         edit_menu = menubar.addMenu("编辑 (&E)")
         self.default_code_act = QAction("默认代码模板 (&D)", self)
         edit_menu.addAction(self.default_code_act)
+        self.format_act = QAction("格式化代码 (Ctrl+Shift+A)", self)
+        edit_menu.addAction(self.format_act)
+
+        settings_menu = menubar.addMenu("设置 (&T)")
+        self.pref_act = QAction("外观与编辑器… (&P)", self)
+        settings_menu.addAction(self.pref_act)
 
     def _build_toolbar(self) -> None:
         toolbar = QToolBar()
         toolbar.setMovable(False)
-        toolbar.setStyleSheet("QToolBar { background: #111827; border-bottom: 1px solid #2a3a5a; spacing: 6px; padding: 4px; }")
+        toolbar.setStyleSheet(toolbar_qss(self._ui))
         self.addToolBar(toolbar)
 
         self.compiler_combo = QComboBox()
         self.compiler_combo.addItems(find_compiler_candidates())
-        self.compiler_combo.setStyleSheet("QComboBox { background: #1a2332; color: #e8edf5; border: 1px solid #2a3a5a; border-radius: 4px; padding: 4px; }")
         toolbar.addWidget(QLabel("编译器:"))
         toolbar.addWidget(self.compiler_combo)
         toolbar.addSeparator()
 
         self.run_tool_btn = QPushButton("▶ 编译运行")
-        self.run_tool_btn.setStyleSheet("QPushButton { background: qlineargradient(x1:0,y1:0,x2:1,y2:1,stop:0 #34d399,stop:1 #22d3ee); color: #0b0e17; border-radius: 6px; padding: 6px 14px; font-weight: bold; }")
+        self.run_tool_btn.setStyleSheet(button_green_qss(self._ui))
         toolbar.addWidget(self.run_tool_btn)
 
+        self.format_tool_btn = QPushButton("🎨 格式化")
+        self.format_tool_btn.setStyleSheet(button_neutral_qss(self._ui))
+        toolbar.addWidget(self.format_tool_btn)
+
+        self.datagen_tool_btn = QPushButton("🎲 数据生成")
+        self.datagen_tool_btn.setStyleSheet(button_neutral_qss(self._ui))
+        toolbar.addWidget(self.datagen_tool_btn)
+
         self.judge_tool_btn = QPushButton("📊 评测")
+        self.judge_tool_btn.setStyleSheet(button_neutral_qss(self._ui))
         toolbar.addWidget(self.judge_tool_btn)
 
         # 右侧弹性占位，将登录按钮推到最右
@@ -358,10 +428,7 @@ class MainWindow(QMainWindow):
         toolbar.addWidget(spacer)
 
         self.auth_btn = QPushButton("🔐 登录")
-        self.auth_btn.setStyleSheet(
-            "QPushButton { background: #1a2332; color: #e8edf5; border: 1px solid #2a3a5a;"
-            " border-radius: 6px; padding: 6px 14px; } QPushButton:hover { border-color: #4f9cf7; }"
-        )
+        self.auth_btn.setStyleSheet(button_neutral_qss(self._ui))
         toolbar.addWidget(self.auth_btn)
 
         self.user_menu = QMenu(self)
@@ -376,9 +443,17 @@ class MainWindow(QMainWindow):
         self.exit_act.triggered.connect(self.close)
         self.compile_run_act.triggered.connect(self._compile_run)
         self.compile_run_term_act.triggered.connect(lambda: self._compile_run(in_terminal=True))
+        self.compile_act.triggered.connect(self._compile_only)
+        self.run_act.triggered.connect(self._run_only)
         self.judge_act.triggered.connect(self._start_judge)
+        self.interactive_act.triggered.connect(self._interactive_run)
+        self.datagen_act.triggered.connect(self._open_data_gen)
         self.default_code_act.triggered.connect(self._edit_default_code)
+        self.format_act.triggered.connect(self._format_current)
+        self.pref_act.triggered.connect(self._open_settings)
         self.run_tool_btn.clicked.connect(self._compile_run)
+        self.format_tool_btn.clicked.connect(self._format_current)
+        self.datagen_tool_btn.clicked.connect(self._open_data_gen)
         self.judge_tool_btn.clicked.connect(self._start_judge)
         self.tab_widget.tabCloseRequested.connect(self._close_tab)
         self.tab_widget.currentChanged.connect(self._tab_changed)
@@ -386,6 +461,10 @@ class MainWindow(QMainWindow):
         self.import_btn.clicked.connect(self._import_test_folder)
         self.clear_tests_btn.clicked.connect(self._clear_tests)
         self.judge_btn.clicked.connect(self._start_judge)
+        # 评测控制（仅连接一次，避免每次评测重复绑定）
+        self.pause_btn.clicked.connect(self._on_pause_clicked)
+        self.resume_btn.clicked.connect(self._on_resume_clicked)
+        self.stop_btn.clicked.connect(self._on_stop_clicked)
         self.add_quick_btn.clicked.connect(self._add_quick_test)
         self.run_quick_btn.clicked.connect(self._run_quick_test)
         self.auth_btn.clicked.connect(self._open_login)
@@ -417,7 +496,7 @@ class MainWindow(QMainWindow):
         self._update_status()
 
     def _builtin_default(self) -> str:
-        return '#include <iostream>\n\nint main() {\n    std::cout << "Hello, 世界!" << std::endl;\n    return 0;\n}'
+        return '#include <bits/stdc++.h>\nusing namespace std;\nsigned main() {\n    return 0;\n}'
 
     def _on_text_changed(self) -> None:
         tab = self._current_tab()
@@ -527,6 +606,9 @@ class MainWindow(QMainWindow):
         if not code.strip():
             QMessageBox.warning(self, "警告", "代码为空")
             return
+        # 未显式指定时，按「运行方式」决定：external=外部黑窗（默认），capture=内置捕获
+        if in_terminal is False and self.run_mode == "external":
+            in_terminal = True
         self.console.clear()
         self._log("正在编译...", "info")
         self.run_tool_btn.setEnabled(False)
@@ -536,8 +618,55 @@ class MainWindow(QMainWindow):
         self.worker.finished.connect(lambda: self.run_tool_btn.setEnabled(True))
         self.worker.start()
 
+    def _compile_only(self) -> None:
+        """仅编译（F9）：构建但不运行，便于检查编译错误。"""
+        tab = self._current_tab()
+        editor = self._get_current_editor()
+        if not tab or not editor:
+            return
+        code = editor.toPlainText()
+        if not code.strip():
+            QMessageBox.warning(self, "警告", "代码为空")
+            return
+        self.console.clear()
+        self._log("正在编译...", "info")
+        self.run_tool_btn.setEnabled(False)
+        self.worker = CompileRunWorker(self.compiler, code, compile_only=True)
+        self.worker.compile_done.connect(self._on_compile_done)
+        self.worker.finished.connect(lambda: self.run_tool_btn.setEnabled(True))
+        self.worker.start()
+
+    def _run_only(self) -> None:
+        """运行（F10）：若有最近编译产物则直接运行黑窗；否则先编译再运行。"""
+        editor = self._get_current_editor()
+        if editor is None:
+            return
+        code = editor.toPlainText()
+        if not code.strip():
+            QMessageBox.warning(self, "警告", "代码为空")
+            return
+        last = getattr(self, "_last_exe", None)
+        if last and os.path.exists(last):
+            self._log("运行已编译的程序...", "info")
+            self.compiler.run_in_terminal(last)
+        else:
+            self._compile_run()
+
+    def _setup_shortcuts(self) -> None:
+        """注册 Dev-C++ 风格快捷键：F9 编译 / F10 运行 / F11 编译并运行 / Ctrl+Shift+A 格式化。"""
+        def add(key: str, slot) -> None:
+            sc = QShortcut(QKeySequence(key), self)
+            sc.setContext(Qt.ShortcutContext.ApplicationShortcut)
+            sc.activated.connect(slot)
+
+        add("F9", self._compile_only)
+        add("F10", self._run_only)
+        add("F11", self._compile_run)
+        add("Ctrl+Shift+A", self._format_current)
+
     def _on_compile_done(self, result: CompileResult) -> None:
         if result.success:
+            self._last_exe = result.exe_path
             self._log("编译成功", "success")
             if result.output.strip():
                 self._log("编译信息:\n" + result.output.strip(), "info")
@@ -572,16 +701,57 @@ class MainWindow(QMainWindow):
         self._log("开始评测...", "info")
         self.judge_btn.setEnabled(False)
         self.judge_tool_btn.setEnabled(False)
+        self.import_btn.setEnabled(False)
+        self.clear_tests_btn.setEnabled(False)
+        self.pause_btn.setEnabled(True)
+        self.resume_btn.setEnabled(False)
+        self.stop_btn.setEnabled(True)
         self.test_list.clear()
         for tc in tab.tests:
             item = QTreeWidgetItem([tc.name, "⏳", "-", "-"])
             self.test_list.addTopLevelItem(item)
         self.judge_summary.setText("评测中...")
-        self.worker = JudgeWorker(self.judge_engine, code, tab.tests, self.time_limit_spin.value(), self.memory_limit_spin.value())
+        self._judge_total = len(tab.tests)
+        # 每次评测使用独立的控制对象（避免上次残留的 stop/pause 状态）
+        control = JudgeControl()
+        self.worker = JudgeWorker(
+            self.judge_engine, code, tab.tests,
+            self.time_limit_spin.value(), self.memory_limit_spin.value(),
+            ignore_case=self.ignore_case_check.isChecked(), control=control,
+        )
+        self.worker.result_ready.connect(self._on_case_done)
         self.worker.finished.connect(self._on_judge_done)
-        self.worker.finished.connect(lambda: self.judge_btn.setEnabled(True))
-        self.worker.finished.connect(lambda: self.judge_tool_btn.setEnabled(True))
+        self.worker.finished.connect(self._reset_judge_buttons)
         self.worker.start()
+
+    def _on_pause_clicked(self) -> None:
+        if getattr(self, "worker", None) and self.worker.isRunning():
+            self.worker.request_pause()
+            self.pause_btn.setEnabled(False)
+            self.resume_btn.setEnabled(True)
+
+    def _on_resume_clicked(self) -> None:
+        if getattr(self, "worker", None) and self.worker.isRunning():
+            self.worker.request_resume()
+            self.resume_btn.setEnabled(False)
+            self.pause_btn.setEnabled(True)
+
+    def _on_stop_clicked(self) -> None:
+        if getattr(self, "worker", None) and self.worker.isRunning():
+            self.worker.request_stop()
+            self.stop_btn.setEnabled(False)
+            self.pause_btn.setEnabled(False)
+            self.resume_btn.setEnabled(False)
+
+    def _reset_judge_buttons(self) -> None:
+        """评测结束后复位按钮状态。"""
+        self.judge_btn.setEnabled(True)
+        self.judge_tool_btn.setEnabled(True)
+        self.import_btn.setEnabled(True)
+        self.clear_tests_btn.setEnabled(True)
+        self.pause_btn.setEnabled(False)
+        self.resume_btn.setEnabled(False)
+        self.stop_btn.setEnabled(False)
 
     def _on_judge_done(self, result: JudgeResult) -> None:
         if result.overall_status == "compile_error":
@@ -591,44 +761,62 @@ class MainWindow(QMainWindow):
             self.judge_summary.setStyleSheet("color: #f87171; padding: 8px; background: rgba(0,0,0,0.2); border-radius: 6px;")
             for i in range(self.test_list.topLevelItemCount()):
                 item = self.test_list.topLevelItem(i)
-                item.setText(1, "CE")
+                if item is not None:
+                    item.setText(1, "CE")
             return
 
         ac = 0
-        self.test_list.clear()
-        for res in result.results:
-            color = ""
+        for i, res in enumerate(result.results):
             if res.status == "AC":
                 ac += 1
-                color = "color: #34d399;"
-            elif res.status == "WA":
-                color = "color: #f87171;"
-            elif res.status == "TLE":
-                color = "color: #fb923c;"
-            elif res.status == "MLE":
-                color = "color: #f472b6;"
-            elif res.status == "RE":
-                color = "color: #f87171;"
-            item = QTreeWidgetItem([
-                res.name,
-                res.status,
-                f"{res.time:.3f}s",
-                f"{res.memory_mb:.1f}MB",
-            ])
-            item.setToolTip(0, f"输入:\n{res.expected[:500]}\n\n输出:\n{res.stdout[:500]}\n\n错误:\n{res.stderr[:500]}")
-            from PyQt6.QtGui import QBrush
-            item.setForeground(1, QBrush(QColor({"AC": "#34d399", "WA": "#f87171", "TLE": "#fb923c", "MLE": "#f472b6", "RE": "#f87171"}.get(res.status, "#e8edf5"))))
-            self.test_list.addTopLevelItem(item)
+            item = self.test_list.topLevelItem(i)
+            if item is not None:
+                self._paint_result_item(item, res)
 
-        total = len(result.results)
-        rate = ac / total * 100 if total else 0
-        self.judge_summary.setText(f"AC {ac}/{total} ({rate:.1f}%)")
-        if ac == total:
-            self.judge_summary.setStyleSheet("color: #34d399; padding: 8px; background: rgba(0,0,0,0.2); border-radius: 6px; font-weight: bold;")
-            self._log(f"全部通过! AC {ac}/{total}", "success")
+        # 因「停止」而遗漏的用例标为「已停止」
+        if result.stopped:
+            for i in range(len(result.results), self.test_list.topLevelItemCount()):
+                item = self.test_list.topLevelItem(i)
+                if item is not None:
+                    item.setText(1, "已停止")
+                    item.setForeground(1, QBrush(QColor("#94a9c9")))
+
+        total_run = len(result.results)
+        rate = ac / total_run * 100 if total_run else 0
+        if result.stopped:
+            self.judge_summary.setText(f"已停止（AC {ac}/{total_run}，共 {self._judge_total}）")
+            self.judge_summary.setStyleSheet("color: #94a9c9; padding: 8px; background: rgba(0,0,0,0.2); border-radius: 6px; font-weight: bold;")
+            self._log(f"评测已停止：完成 {total_run}/{self._judge_total}，AC {ac}", "warning")
         else:
-            self.judge_summary.setStyleSheet("color: #fb923c; padding: 8px; background: rgba(0,0,0,0.2); border-radius: 6px; font-weight: bold;")
-            self._log(f"通过 {ac}/{total}", "warning")
+            self.judge_summary.setText(f"AC {ac}/{total_run} ({rate:.1f}%)")
+            if ac == total_run:
+                self.judge_summary.setStyleSheet("color: #34d399; padding: 8px; background: rgba(0,0,0,0.2); border-radius: 6px; font-weight: bold;")
+                self._log(f"全部通过! AC {ac}/{total_run}", "success")
+            else:
+                self.judge_summary.setStyleSheet("color: #fb923c; padding: 8px; background: rgba(0,0,0,0.2); border-radius: 6px; font-weight: bold;")
+                self._log(f"通过 {ac}/{total_run}", "warning")
+
+    def _paint_result_item(self, item: "QTreeWidgetItem", result: "TestResult") -> None:
+        """把一个用例结果刷到表格行（状态 / 用时 / 内存 / 配色 / 悬浮提示）。"""
+        item.setText(1, result.status)
+        item.setText(2, f"{result.time:.3f}s")
+        item.setText(3, f"{result.memory_mb:.1f}MB")
+        color = {
+            "AC": "#34d399", "WA": "#f87171", "TLE": "#fb923c",
+            "MLE": "#f472b6", "RE": "#f87171",
+        }.get(result.status, "#e8edf5")
+        item.setForeground(1, QBrush(QColor(color)))
+        item.setToolTip(0, f"输入:\n{result.expected[:500]}\n\n输出:\n{result.stdout[:500]}\n\n错误:\n{result.stderr[:500]}")
+
+    def _on_case_done(self, result: "TestResult", index: int) -> None:
+        """每个用例跑完即增量刷新对应行，实现评测结果『依次显示』。"""
+        if not (0 <= index < self.test_list.topLevelItemCount()):
+            return
+        item = self.test_list.topLevelItem(index)
+        if item is not None:
+            self._paint_result_item(item, result)
+        total = getattr(self, "_judge_total", 0) or (index + 1)
+        self.judge_summary.setText(f"评测中... ({index + 1}/{total})")
 
     def _import_test_folder(self) -> None:
         folder = QFileDialog.getExistingDirectory(self, "导入测试文件夹")
@@ -719,16 +907,80 @@ class MainWindow(QMainWindow):
         dlg = QDialog(self)
         dlg.setWindowTitle("默认代码模板")
         dlg.setMinimumSize(600, 400)
+        dlg.setStyleSheet(dialog_qss(self._ui))
         layout = QVBoxLayout(dlg)
         edit = QPlainTextEdit()
         edit.setPlainText(self.settings.value("default_code", self._builtin_default(), type=str))
-        edit.setStyleSheet("QPlainTextEdit { background: #0d1117; color: #e8edf5; border: 1px solid #2a3a5a; border-radius: 4px; }")
+        edit.setStyleSheet(plain_edit_qss(self._ui))
         layout.addWidget(edit)
         btns = QDialogButtonBox(QDialogButtonBox.StandardButton.Save | QDialogButtonBox.StandardButton.Cancel)
         btns.accepted.connect(lambda: (self.settings.setValue("default_code", edit.toPlainText()), dlg.accept()))
         btns.rejected.connect(dlg.reject)
         layout.addWidget(btns)
         dlg.exec()
+
+    def _format_current(self) -> None:
+        """对当前编辑器代码执行格式化（保留光标位置）。"""
+        editor = self._get_current_editor()
+        if editor is None:
+            return
+        code = editor.toPlainText()
+        if not code.strip():
+            return
+        formatted = format_cpp(code)
+        if formatted == code:
+            self._log("已是最优格式", "info")
+            return
+        # 记录光标绝对偏移，格式化后尽量还原
+        cur = editor.textCursor()
+        pos = cur.position()
+        pos = min(pos, len(formatted))
+        editor.blockSignals(True)
+        editor.setPlainText(formatted)
+        editor.blockSignals(False)
+        new_cur = editor.textCursor()
+        new_cur.setPosition(pos)
+        editor.setTextCursor(new_cur)
+        tab = self._current_tab()
+        if tab:
+            tab.content = formatted
+        self._log("已格式化代码", "success")
+
+    def _interactive_run(self) -> None:
+        """编译后用管道交互式运行，支持运行时输入。"""
+        tab = self._current_tab()
+        editor = self._get_current_editor()
+        if not tab or not editor:
+            return
+        code = editor.toPlainText()
+        if not code.strip():
+            QMessageBox.warning(self, "警告", "代码为空")
+            return
+        self._log("正在编译（交互运行）…", "info")
+        result = self.compiler.compile(code)
+        if not result.success:
+            self._log("编译失败", "error")
+            if result.output:
+                self._log(result.output, "error")
+            return
+        self._log("编译成功，启动交互运行…", "success")
+        dlg = InteractiveRunDialog(result.exe_path, self)
+        dlg.show()
+
+    def _open_data_gen(self) -> None:
+        """打开数据生成面板（合并自 Data-Generator 的核心能力）。"""
+        tab = self._current_tab()
+        if tab is None:
+            return
+        dlg = DataGenDialog(self.compiler, self)
+        dlg.imported.connect(lambda cases: self._on_data_imported(cases, tab))
+        dlg.show()
+
+    def _on_data_imported(self, cases: list, tab) -> None:
+        for name, inp, exp in cases:
+            tab.tests.append(TestCase(name=name, input=inp, expected=exp))
+        self._render_tests()
+        self._log(f"数据生成：已导入 {len(cases)} 组测试用例", "success")
 
     def _log(self, text: str, level: str = "info") -> None:
         import html as html_module
@@ -750,11 +1002,76 @@ class MainWindow(QMainWindow):
             if idx >= 0:
                 self.compiler_combo.setCurrentIndex(idx)
 
+    # ---------- 设置：外观与编辑器主题 ----------
+    def _open_settings(self) -> None:
+        dlg = SettingsDialog(self)
+        dlg.setStyleSheet(dialog_qss(ui_palette()))
+        dlg.settings_applied.connect(self._apply_theme)
+        dlg.exec()
+
+    def _apply_compiler_options(self) -> None:
+        """从 QSettings 读取编译器路径、标准与编译/连接指令并应用到 compiler 实例。"""
+        self.compiler.set_compiler(get_compiler_cmd())
+        self.compiler.set_std(get_cpp_std())
+        self.compiler.set_compile_flags(get_compile_flags())
+        self.compiler.set_link_flags(get_link_flags())
+        self.run_mode = get_run_mode()  # external=外部黑窗（默认）；capture=内置捕获
+        if not hasattr(self, "_last_exe"):
+            self._last_exe = None
+
+    def _apply_theme(self) -> None:
+        """重新读取主题并应用到主窗口与所有已打开的代码编辑器（设置变更时调用）。"""
+        self._ui = ui_palette()
+        self.setStyleSheet(main_window_global_qss(self._ui))
+        self.tab_widget.setStyleSheet(tab_qss(self._ui))
+        self._apply_compiler_options()
+        cmd = get_compiler_cmd()
+        if self.compiler_combo.currentText() != cmd:
+            self.compiler_combo.blockSignals(True)
+            self.compiler_combo.setCurrentText(cmd)
+            self.compiler_combo.blockSignals(False)
+            self.status_compiler.setText(cmd)
+        for grp in self.findChildren(QGroupBox):
+            grp.setStyleSheet(group_qss(self._ui))
+        self.console.setStyleSheet(console_qss(self._ui))
+        self.quick_input.setStyleSheet(plain_edit_qss(self._ui))
+        self.quick_expected.setStyleSheet(plain_edit_qss(self._ui))
+        self.test_list.setStyleSheet(tree_qss(self._ui))
+        self.import_btn.setStyleSheet(button_neutral_qss(self._ui))
+        self.judge_btn.setStyleSheet(button_green_qss(self._ui))
+        self.clear_tests_btn.setStyleSheet(button_danger_qss(self._ui))
+        self.run_quick_btn.setStyleSheet(button_green_qss(self._ui))
+        self.run_tool_btn.setStyleSheet(button_green_qss(self._ui))
+        self.judge_tool_btn.setStyleSheet(button_neutral_qss(self._ui))
+        self.auth_btn.setStyleSheet(button_neutral_qss(self._ui))
+        self.status_bar.setStyleSheet(statusbar_qss(self._ui))
+        self.user_status_label.setStyleSheet(f"color: {self._ui['text3']};")
+        tb = self.findChild(QToolBar)
+        if tb is not None:
+            tb.setStyleSheet(toolbar_qss(self._ui))
+        for sp in self.findChildren(QSplitter):
+            sp.setStyleSheet(splitter_qss(self._ui))
+        # 代码编辑器主题（字体 + 配色）
+        for i in range(self.tab_widget.count()):
+            w = self.tab_widget.widget(i)
+            if isinstance(w, CodeEditor):
+                w.apply_theme()
+
     # ---------- 账号 / 登录（对接主页 auth-worker） ----------
     def _init_auth(self) -> None:
         self.auth_client = AuthClient()
         self.token = ""
         self.current_user = None
+        # 聊天（对接 chat-worker.cyx012113.top，复用同一份登录 token）
+        from .chat_client import ChatClient
+        from .chat_panel import ChatDock
+        self.chat_client = ChatClient()
+        self.chat_dock = ChatDock(self.chat_client, self)
+        self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, self.chat_dock)
+        self.chat_dock.setAllowedAreas(
+            Qt.DockWidgetArea.LeftDockWidgetArea | Qt.DockWidgetArea.RightDockWidgetArea
+        )
+        self.chat_dock.setVisible(True)
         self._update_user_ui()
         saved = self.settings.value("auth_token", "")
         if saved:
@@ -774,11 +1091,13 @@ class MainWindow(QMainWindow):
         if ok and isinstance(data, dict):
             self.current_user = data
             self._update_user_ui()
+            self._start_chat()
             self._log(f"已恢复登录：{data.get('username', '')}", "success")
         else:
             self.token = ""
             self.current_user = None
             self.settings.remove("auth_token")
+            self._stop_chat()
             self._update_user_ui()
 
     def _open_login(self) -> None:
@@ -796,15 +1115,41 @@ class MainWindow(QMainWindow):
         else:
             self.settings.remove("auth_token")
         self._update_user_ui()
+        self._start_chat()
         self._log(f"已登录：{user.get('username', '')}", "success")
 
     def _logout(self) -> None:
+        self._stop_chat()
         self.token = ""
         self.current_user = None
         self.settings.remove("auth_token")
         self.auth_btn.setMenu(None)
         self._update_user_ui()
         self._log("已退出登录", "info")
+
+    # ---------- 聊天（对接 chat-worker） ----------
+    def _start_chat(self) -> None:
+        if not self.token or not self.current_user:
+            return
+        self.chat_client.set_credentials(
+            self.token,
+            self.current_user.get("username", ""),
+            self.current_user.get("is_op", False),
+        )
+        self.chat_client.start()
+        self.chat_dock.set_logged_in(
+            True,
+            self.current_user.get("username", ""),
+            self.current_user.get("is_op", False),
+        )
+        self.chat_dock.setVisible(True)
+
+    def _stop_chat(self) -> None:
+        if hasattr(self, "chat_client"):
+            self.chat_client.stop()
+            self.chat_client.clear_credentials()
+        if hasattr(self, "chat_dock"):
+            self.chat_dock.set_logged_in(False)
 
     def _update_user_ui(self) -> None:
         if self.current_user:

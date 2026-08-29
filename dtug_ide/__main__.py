@@ -69,6 +69,10 @@ def main() -> int:
     if hasattr(Qt, "AA_UseHighDpiPixmaps"):
         QApplication.setAttribute(Qt.ApplicationAttribute.AA_UseHighDpiPixmaps, True)
 
+    # 必须在创建 QApplication 之前设置：否则后续（点击「内嵌网页登录」时）懒导入
+    # PyQt6.QtWebEngineWidgets 会抛 ImportError（QtWebEngine 要求共享 OpenGL 上下文）。
+    QApplication.setAttribute(Qt.ApplicationAttribute.AA_ShareOpenGLContexts, True)
+
     _ensure_qt_plugin_path()
     _ensure_webengine_paths()
 

@@ -1,4 +1,7 @@
-"""C++ code editor with syntax highlighting and line numbers."""
+"""C++ code editor with syntax highlighting and line numbers.
+
+字体族 / 字号 / 配色均来自 dtug_ide.theme，可通过「设置」实时调整并持久化。
+"""
 
 from __future__ import annotations
 
@@ -11,24 +14,46 @@ from PyQt6.QtGui import (
 )
 from PyQt6.QtWidgets import QPlainTextEdit, QTextEdit, QWidget
 
+from .theme import editor_palette, get_editor_font, monospace_fallbacks
+
 
 def _iter_matches(iterator: "QRegularExpressionMatchIterator"):
-    """PyQt6 的 QRegularExpressionMatchIterator 不可直接迭代，
-    必须显式使用 hasNext()/next() 遍历。"""
+    """PyQt6 的 QRegularExpressionMatchIterator 不可直接迭代，必须显式遍历。"""
     while iterator.hasNext():
         yield iterator.next()
 
 
-class CppHighlighter(QSyntaxHighlighter):
-    """C/C++ syntax highlighter."""
+def _resolve_font(family: str, size: int) -> QFont:
+    """按首选字体族解析等宽字体；若系统无该字体则回退到系统等宽字体。"""
+    available = set(QFontDatabase.families())
+    if family in available:
+        return QFont(family, size)
+    for cand in monospace_fallbacks():
+        if cand in available:
+            return QFont(cand, size)
+    font = QFontDatabase.systemFont(QFontDatabase.SystemFont.FixedFont)
+    font.setPointSize(size)
+    return font
 
-    def __init__(self, document: QTextDocument) -> None:
+
+class CppHighlighter(QSyntaxHighlighter):
+    """C/C++ syntax highlighter，配色由主题调色板驱动。"""
+
+    def __init__(self, document: QTextDocument, palette: dict | None = None) -> None:
         super().__init__(document)
+        self._palette = palette or editor_palette()
         self._formats: dict[str, QTextCharFormat] = {}
         self._build_formats()
         self._build_rules()
 
+    def set_palette(self, palette: dict) -> None:
+        self._palette = palette
+        self._build_formats()
+        self.rehighlight()
+
     def _build_formats(self) -> None:
+        p = self._palette
+
         def fmt(color: str, bold: bool = False, italic: bool = False) -> QTextCharFormat:
             f = QTextCharFormat()
             f.setForeground(QColor(color))
@@ -38,14 +63,14 @@ class CppHighlighter(QSyntaxHighlighter):
                 f.setFontItalic(True)
             return f
 
-        self._formats["keyword"] = fmt("#f92672", bold=True)
-        self._formats["type"] = fmt("#66d9ef", bold=True)
-        self._formats["number"] = fmt("#ae81ff")
-        self._formats["string"] = fmt("#e6db74")
-        self._formats["char"] = fmt("#e6db74")
-        self._formats["comment"] = fmt("#75715e", italic=True)
-        self._formats["preproc"] = fmt("#f92672", bold=True)
-        self._formats["function"] = fmt("#a6e22e")
+        self._formats["keyword"] = fmt(p["keyword"], bold=True)
+        self._formats["type"] = fmt(p["type"], bold=True)
+        self._formats["number"] = fmt(p["number"])
+        self._formats["string"] = fmt(p["string"])
+        self._formats["char"] = fmt(p["string"])
+        self._formats["comment"] = fmt(p["comment"], italic=True)
+        self._formats["preproc"] = fmt(p["preproc"], bold=True)
+        self._formats["function"] = fmt(p["function"])
 
     def _build_rules(self) -> None:
         keywords = [
@@ -91,6 +116,8 @@ class CppHighlighter(QSyntaxHighlighter):
         self._function_re = QRegularExpression(r"\b([a-zA-Z_]\w*)\s*(?=[\(])")
 
     def highlightBlock(self, text: str) -> None:
+        p = self._palette
+        comment_color = QColor(p["comment"])
         # Multi-line comments state
         start_state = 1
         in_comment = self.previousBlockState() == start_state
@@ -112,9 +139,7 @@ class CppHighlighter(QSyntaxHighlighter):
                 start_idx = text.find("/*", i)
                 if start_idx == -1:
                     break
-                # Check if inside string
                 quote_count = text.count('"', i, start_idx)
-                # Simple heuristic: if odd quotes, might be inside string; skip
                 if quote_count % 2 == 1:
                     i = start_idx + 2
                     continue
@@ -128,9 +153,8 @@ class CppHighlighter(QSyntaxHighlighter):
 
         # Single-line comment
         for match in _iter_matches(QRegularExpression(r"//.*$").globalMatch(text)):
-            # Don't override multi-line comment formatting
             fmt = self.format(match.capturedStart())
-            if fmt.foreground().color() != QColor("#75715e"):
+            if fmt.foreground().color() != comment_color:
                 self.setFormat(match.capturedStart(), match.capturedLength(), self._formats["comment"])
 
         # Preprocessor
@@ -165,7 +189,7 @@ class CppHighlighter(QSyntaxHighlighter):
 class LineNumberArea(QWidget):
     """Line number display widget."""
 
-    def __init__(self, editor: CodeEditor) -> None:
+    def __init__(self, editor: "CodeEditor") -> None:
         super().__init__(editor)
         self._editor = editor
 
@@ -182,22 +206,16 @@ class CodeEditor(QPlainTextEdit):
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self._line_number_area = LineNumberArea(self)
-        self._highlighter = CppHighlighter(self.document())
 
-        families = QFontDatabase.families()
-        if "JetBrains Mono" in families:
-            font = QFont("JetBrains Mono", 12)
-        elif "Fira Code" in families:
-            font = QFont("Fira Code", 12)
-        elif "Consolas" in families:
-            font = QFont("Consolas", 12)
-        else:
-            font = QFontDatabase.systemFont(QFontDatabase.SystemFont.FixedFont)
-            font.setPointSize(12)
-        self.setFont(font)
+        family, size = get_editor_font()
+        self._font = _resolve_font(family, size)
+        self.setFont(self._font)
+
+        self._highlighter = CppHighlighter(self.document(), editor_palette())
+        self._apply_editor_style()
 
         self.setWordWrapMode(QTextOption.WrapMode.NoWrap)
-        self.setTabStopDistance(QFontMetrics(font).horizontalAdvance(" ") * 4)
+        self.setTabStopDistance(QFontMetrics(self._font).horizontalAdvance(" ") * 4)
 
         self.blockCountChanged.connect(self._update_line_number_area_width)
         self.updateRequest.connect(self._update_line_number_area)
@@ -206,17 +224,34 @@ class CodeEditor(QPlainTextEdit):
         self._update_line_number_area_width(0)
         self._highlight_current_line()
 
-        # Dark theme colors
-        self.setStyleSheet("""
-            QPlainTextEdit {
-                background-color: #0d1117;
-                color: #e8edf5;
-                border: 1px solid #2a3a5a;
-                border-radius: 8px;
-                padding: 4px;
-                selection-background-color: rgba(79, 156, 247, 0.3);
-            }
-        """)
+    # ---- 主题 / 字体 ----
+    def apply_theme(self) -> None:
+        """从 theme 重新读取字体与配色并应用（设置变更时调用）。"""
+        family, size = get_editor_font()
+        self._font = _resolve_font(family, size)
+        self.setFont(self._font)
+        self.setTabStopDistance(QFontMetrics(self._font).horizontalAdvance(" ") * 4)
+        self._highlighter.set_palette(editor_palette())
+        self._apply_editor_style()
+        self._update_line_number_area_width(0)
+        self._highlight_current_line()
+        self.viewport().update()
+
+    def _apply_editor_style(self) -> None:
+        p = editor_palette()
+        self.setStyleSheet(
+            f"QPlainTextEdit {{"
+            f" background-color: {p['bg']};"
+            f" color: {p['fg']};"
+            f" border: 1px solid {p['border'] if 'border' in p else '#2a3a5a'};"
+            f" border-radius: 8px;"
+            f" padding: 4px;"
+            f" selection-background-color: {p['selection']};"
+            f"}}"
+        )
+        self._line_no_bg = p["line_no_bg"]
+        self._line_no_fg = p["line_no_fg"]
+        self._line_hl = p["line_hl"]
 
     def line_number_area_width(self) -> int:
         digits = max(1, len(str(self.blockCount())))
@@ -240,7 +275,7 @@ class CodeEditor(QPlainTextEdit):
 
     def line_number_area_paint_event(self, event: QPaintEvent) -> None:
         painter = QPainter(self._line_number_area)
-        painter.fillRect(event.rect(), QColor("#0d1117"))
+        painter.fillRect(event.rect(), QColor(self._line_no_bg))
 
         block = self.firstVisibleBlock()
         block_number = block.blockNumber()
@@ -250,7 +285,7 @@ class CodeEditor(QPlainTextEdit):
         while block.isValid() and top <= event.rect().bottom():
             if block.isVisible() and bottom >= event.rect().top():
                 number = str(block_number + 1)
-                painter.setPen(QColor("#5a7a9a"))
+                painter.setPen(QColor(self._line_no_fg))
                 painter.drawText(
                     0, top, self._line_number_area.width() - 4,
                     self.fontMetrics().height(),
@@ -265,7 +300,7 @@ class CodeEditor(QPlainTextEdit):
         extra_selections = []
         if not self.isReadOnly():
             selection = QTextEdit.ExtraSelection()
-            line_color = QColor("#1a2332")
+            line_color = QColor(self._line_hl)
             selection.format.setBackground(line_color)
             selection.format.setProperty(QTextFormat.Property.FullWidthSelection, True)
             selection.cursor = self.textCursor()
@@ -284,7 +319,6 @@ class CodeEditor(QPlainTextEdit):
                     indent += ch
                 else:
                     break
-            # If line ends with '{', add extra indent
             stripped = block.rstrip()
             extra = "    " if stripped.endswith("{") else ""
             super().keyPressEvent(event)
@@ -304,15 +338,17 @@ class CodeEditor(QPlainTextEdit):
     def wheelEvent(self, event: QWheelEvent) -> None:
         if event.modifiers() == Qt.KeyboardModifier.ControlModifier:
             delta = event.angleDelta().y()
-            font = self.font()
+            font = self._font
             size = font.pointSize()
             if delta > 0:
                 size = min(40, size + 1)
             else:
                 size = max(8, size - 1)
             font.setPointSize(size)
+            self._font = font
             self.setFont(font)
             self.setTabStopDistance(QFontMetrics(font).horizontalAdvance(" ") * 4)
+            self._update_line_number_area_width(0)
             event.accept()
             return
         super().wheelEvent(event)
