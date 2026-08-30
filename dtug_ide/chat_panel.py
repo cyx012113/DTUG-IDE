@@ -130,8 +130,8 @@ class ChatDock(QDockWidget):
 
         # 头部
         header = QHBoxLayout()
-        title = QLabel("聊天")
-        title.setStyleSheet("font-weight:bold;font-size:14px;color:" + p["text"] + ";")
+        self._title = QLabel("聊天")
+        self._title.setStyleSheet("font-weight:bold;font-size:14px;color:" + p["text"] + ";")
         self._status = StatusPill("未登录", "neutral")
         self._dm_btn = QPushButton("私聊")
         self._dm_btn.setStyleSheet(button_neutral_qss(p))
@@ -143,7 +143,7 @@ class ChatDock(QDockWidget):
         self._manage_btn = QPushButton("群管理")
         self._manage_btn.setStyleSheet(button_neutral_qss(p))
         self._manage_btn.setToolTip("管理当前群聊（群主 / 管理员可用）")
-        header.addWidget(title)
+        header.addWidget(self._title)
         header.addStretch(1)
         header.addWidget(self._status)
         header.addWidget(self._dm_btn)
@@ -195,6 +195,28 @@ class ChatDock(QDockWidget):
         # 未登录页
         self._overlay = QLabel("请先登录以使用聊天功能")
         self._overlay.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._overlay.setStyleSheet(f"color:{p['text3']};font-size:13px;")
+
+    # ------------------------------------------------------------------
+    def apply_theme(self) -> None:
+        """重新读取当前调色板并刷新面板内所有控件（主窗口切换主题时调用）。
+
+        聊天面板按钮在构建时各自套用了暗色/亮色样式表，若不在主题切换时
+        重新套用，会残留旧主题的黑色背景。
+        """
+        from .theme import (
+            ui_palette, button_neutral_qss, button_green_qss, tree_qss, group_qss,
+        )
+        p = ui_palette()
+        self._title.setStyleSheet("font-weight:bold;font-size:14px;color:" + p["text"] + ";")
+        self._dm_btn.setStyleSheet(button_neutral_qss(p))
+        self._grp_btn.setStyleSheet(button_neutral_qss(p))
+        self._join_btn.setStyleSheet(button_neutral_qss(p))
+        self._manage_btn.setStyleSheet(button_neutral_qss(p))
+        self._conv_list.setStyleSheet(tree_qss(p))
+        self._msg_list.setStyleSheet(group_qss(p))
+        self._send_btn.setStyleSheet(button_green_qss(p))
+        self._emoji_btn.setStyleSheet(button_neutral_qss(p))
         self._overlay.setStyleSheet(f"color:{p['text3']};font-size:13px;")
 
         stack = QStackedWidget()

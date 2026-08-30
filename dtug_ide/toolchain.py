@@ -86,16 +86,51 @@ def bundled_gpp() -> str:
     return ""
 
 
+def _env_path_dirs() -> List[str]:
+    """返回环境变量 PATH 中所有真实存在的目录（按出现顺序）。"""
+    raw = os.environ.get("PATH", "")
+    out: List[str] = []
+    for p in raw.split(os.pathsep):
+        p = p.strip()
+        if p and os.path.isdir(p):
+            out.append(p)
+    return out
+
+
+def _sibling_toolchain_bins(root_dir: str) -> List[str]:
+    """从某个 bin 目录（或工具链根目录）推导出可用编译器的 bin 目录列表。
+
+    例如传入 ``D:\\MSYS2\\mingw64\\bin`` 或 ``D:\\MSYS2\\mingw64``，都能找到
+    ``...\\mingw64\\bin\\g++.exe``；并额外扫描同级目录下的
+    mingw64 / ucrt64 / clang64 / mingw32 / clang32 等环境，覆盖 MSYS2 多环境安装。
+    """
+    bins: List[str] = []
+    d = Path(root_dir)
+    if d.name.lower() == "bin":
+        bins.append(str(d))
+        d = d.parent  # 退到工具链根，继续扫描同级环境
+    for sub in ("mingw64", "ucrt64", "clang64", "mingw32", "clang32"):
+        cand = d / sub / "bin"
+        if cand.is_dir():
+            bins.append(str(cand))
+    return bins
+
+
 def _mingw_roots() -> List[str]:
-    """返回本机常见的 MinGW / MSYS2 安装根目录（含 bin 子目录）。"""
+    """返回本机常见的 MinGW / MSYS2 标准安装根目录（含 bin 子目录）。
+
+    设计原则：**不再硬编码用户特定的安装路径（如 ``D:\\MSYS2``）**。
+    改用：
+      * 标准安装位置（C: 盘常见路径）作为兜底；
+      * 优先通过 PATH 环境变量动态发现（见 discover_compilers 的扫描步骤）；
+      * 用户也可在设置里手动「浏览」指定任意 g++.exe。
+    """
     roots: List[str] = []
     extra = [
-        r"D:\MSYS2\mingw64",
         r"C:\msys64\mingw64",
         r"C:\MSYS2\mingw64",
         r"C:\mingw64",
         # 轻量 ucrt64 工具链（UCRT 运行时，体积远小于完整 mingw64）
-        r"D:\MSYS2\ucrt64",
         r"C:\msys64\ucrt64",
         r"C:\MSYS2\ucrt64",
         r"C:\ucrt64",
@@ -112,7 +147,10 @@ def _mingw_roots() -> List[str]:
 def discover_compilers() -> List[str]:
     """发现系统中可用的 C++ 编译器，按优先级排序后返回。
 
-    优先级：内置 mingw64 > 本机 MSYS2/MinGW 路径 > PATH 中的 g++/clang++。
+    优先级：内置 mingw64 > 本机标准安装路径 > 扫描 PATH 环境变量发现的编译器
+    （含同级 mingw64/ucrt64/clang64 等环境）> 手动「浏览」指定的路径（持久化在
+    QSettings，由 get_compiler_cmd 读取，不在本函数内）。
+
     若什么都没找到，返回 ["g++"] 以保证 UI 不为空。
     """
     found: List[str] = []
@@ -132,19 +170,26 @@ def discover_compilers() -> List[str]:
     if bundled:
         add(bundled)
 
-    # 2. 本机安装路径
+    # 2. 本机标准安装路径（C: 盘常见位置兜底）
     for root in _mingw_roots():
-        bin_dir = Path(root) / "bin" if (Path(root).name != "bin") else Path(root)
+        bin_dir = Path(root) / "bin" if (Path(root).name.lower() != "bin") else Path(root)
         for exe in ("g++.exe", "clang++.exe"):
             p = bin_dir / exe
             if p.exists():
                 add(str(p))
 
-    # 3. PATH 中的命令
-    for cmd in ("g++", "g++-14", "g++-13", "g++-12", "g++-11", "clang++"):
-        loc = shutil.which(cmd)
-        if loc:
-            add(loc)
+    # 3. 扫描 PATH 环境变量：既找 PATH 目录里直接存在的编译器命令，
+    #    也从一个 bin 目录推导出同级 mingw64/ucrt64/clang64 等环境。
+    for d in _env_path_dirs():
+        for b in _sibling_toolchain_bins(d):
+            for exe in ("g++.exe", "clang++.exe"):
+                p = Path(b) / exe
+                if p.exists():
+                    add(str(p))
+        for exe in ("g++.exe", "clang++.exe", "g++", "clang++"):
+            p = Path(d) / exe
+            if p.exists():
+                add(str(p))
 
     if not found:
         return ["g++"]

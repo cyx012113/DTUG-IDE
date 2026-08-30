@@ -13,14 +13,15 @@ from PyQt6.QtCore import QThread, pyqtSignal
 from PyQt6.QtGui import QFontDatabase
 from PyQt6.QtWidgets import (
     QComboBox, QDialog, QDialogButtonBox, QFileDialog, QFormLayout, QGroupBox,
-    QHBoxLayout, QLabel, QLineEdit, QPushButton, QSpinBox, QVBoxLayout,
+    QHBoxLayout, QLabel, QLineEdit, QPushButton, QSpinBox, QTabWidget,
+    QVBoxLayout,
 )
 
 from .theme import (
     dialog_qss, editor_themes, get_compiler_cmd, get_cpp_std, get_compile_flags,
     get_editor_font, get_editor_theme, get_link_flags, get_run_mode, get_ui_theme,
     set_compiler_cmd, set_compile_flags, set_cpp_std, set_editor_font, set_editor_theme,
-    set_link_flags, set_run_mode, set_ui_theme, ui_palette, ui_themes,
+    set_link_flags, set_run_mode, set_ui_theme, tab_qss, ui_palette, ui_themes,
 )
 from .toolchain import (
     bundled_gpp, copy_toolchain, detect_cpp_standards, discover_compilers, gpp_version,
@@ -82,19 +83,32 @@ class SettingsDialog(QDialog):
         root.setSpacing(14)
         root.setContentsMargins(18, 18, 18, 18)
 
-        # 外观（界面主题）
-        appearance = QGroupBox("外观")
-        ap_form = QFormLayout(appearance)
+        self.tabs = QTabWidget()
+        self.tabs.setObjectName("settingsTabs")
+        root.addWidget(self.tabs)
+
+        # ---- 标签页 1：外观（界面主题）----
+        appearance = QWidget()
+        ap_layout = QVBoxLayout(appearance)
+        ap_layout.setContentsMargins(8, 12, 8, 8)
+        ap_group = QGroupBox("界面主题")
+        ap_form = QFormLayout(ap_group)
         ap_form.setSpacing(10)
         self.ui_theme_combo = QComboBox()
         self.ui_theme_combo.addItems(ui_themes())
-        self.ui_theme_combo.currentTextChanged.connect(self._on_any_change)
+        # 切换界面主题时联动编辑器配色主题（详见 _on_ui_theme_changed）
+        self.ui_theme_combo.currentTextChanged.connect(self._on_ui_theme_changed)
         ap_form.addRow("界面主题", self.ui_theme_combo)
-        root.addWidget(appearance)
+        ap_layout.addWidget(ap_group)
+        ap_layout.addStretch(1)
+        self.tabs.addTab(appearance, "外观")
 
-        # 编辑器
-        editor = QGroupBox("代码编辑器")
-        ed_form = QFormLayout(editor)
+        # ---- 标签页 2：代码编辑器 ----
+        editor = QWidget()
+        ed_layout = QVBoxLayout(editor)
+        ed_layout.setContentsMargins(8, 12, 8, 8)
+        ed_group = QGroupBox("代码编辑器")
+        ed_form = QFormLayout(ed_group)
         ed_form.setSpacing(10)
 
         self.font_combo = QComboBox()
@@ -112,18 +126,22 @@ class SettingsDialog(QDialog):
         self.editor_theme_combo.addItems(editor_themes())
         self.editor_theme_combo.currentTextChanged.connect(self._on_any_change)
         ed_form.addRow("配色主题", self.editor_theme_combo)
-        root.addWidget(editor)
-
+        ed_layout.addWidget(ed_group)
         hint = QLabel("提示：Ctrl + 滚轮可在编辑器中临时缩放字号。")
         hint.setObjectName("hint")
-        root.addWidget(hint)
+        ed_layout.addWidget(hint)
+        ed_layout.addStretch(1)
+        self.tabs.addTab(editor, "编辑器")
 
-        # 工具链（Dev-C++ 风格：编译器 / 标准 / 运行方式 / 编译指令）
-        build = QGroupBox("C++ 工具链")
-        b_form = QFormLayout(build)
+        # ---- 标签页 3：编译器（C++ 工具链，独立于外观/编辑器）----
+        build = QWidget()
+        b_layout = QVBoxLayout(build)
+        b_layout.setContentsMargins(8, 12, 8, 8)
+        b_group = QGroupBox("C++ 工具链")
+        b_form = QFormLayout(b_group)
         b_form.setSpacing(10)
 
-        # 编译器选择
+        # 编译器选择（可手动编辑路径，或「浏览」/「扫描环境变量」）
         self.compiler_combo = QComboBox()
         self.compiler_combo.setEditable(True)
         self.compiler_combo.addItems(discover_compilers())
@@ -133,9 +151,12 @@ class SettingsDialog(QDialog):
         compiler_row = QHBoxLayout()
         self.browse_btn = QPushButton("浏览…")
         self.browse_btn.clicked.connect(self._browse_compiler)
+        self.scan_btn = QPushButton("扫描环境变量")
+        self.scan_btn.clicked.connect(self._scan_env_compilers)
         self.redetect_btn = QPushButton("重新检测版本")
         self.redetect_btn.clicked.connect(self._refresh_standards)
         compiler_row.addWidget(self.browse_btn)
+        compiler_row.addWidget(self.scan_btn)
         compiler_row.addWidget(self.redetect_btn)
         b_form.addRow("编译器操作", compiler_row)
 
@@ -168,7 +189,9 @@ class SettingsDialog(QDialog):
         self.bundle_btn = QPushButton("捆绑内置工具链（复制所选编译器到程序目录）")
         self.bundle_btn.clicked.connect(self._bundle_toolchain)
         b_form.addRow(self.bundle_btn)
-        root.addWidget(build)
+        b_layout.addWidget(b_group)
+        b_layout.addStretch(1)
+        self.tabs.addTab(build, "编译器")
 
         btns = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
         btns.accepted.connect(self._on_accept)
@@ -190,22 +213,43 @@ class SettingsDialog(QDialog):
         return order
 
     def _load_current(self) -> None:
-        self.ui_theme_combo.setCurrentText(get_ui_theme())
-        family, size = get_editor_font()
-        idx = self.font_combo.findText(family)
-        if idx >= 0:
-            self.font_combo.setCurrentIndex(idx)
-        else:
-            self.font_combo.setCurrentText(family)
-        self.size_spin.setValue(size)
-        self.editor_theme_combo.setCurrentText(get_editor_theme())
-        # 工具链
-        self.compiler_combo.setCurrentText(get_compiler_cmd())
+        # 加载时屏蔽信号：避免 setCurrentText 触发自动联动（界面↔编辑器主题）
+        # 或持久化，覆盖用户已保存的偏好。
+        self.ui_theme_combo.blockSignals(True)
+        self.font_combo.blockSignals(True)
+        self.editor_theme_combo.blockSignals(True)
+        self.compiler_combo.blockSignals(True)
+        self.run_mode_combo.blockSignals(True)
+        self.size_spin.blockSignals(True)
+        self.compile_edit.blockSignals(True)
+        self.link_edit.blockSignals(True)
+        try:
+            self.ui_theme_combo.setCurrentText(get_ui_theme())
+            family, size = get_editor_font()
+            idx = self.font_combo.findText(family)
+            if idx >= 0:
+                self.font_combo.setCurrentIndex(idx)
+            else:
+                self.font_combo.setCurrentText(family)
+            self.size_spin.setValue(size)
+            self.editor_theme_combo.setCurrentText(get_editor_theme())
+            # 工具链
+            self.compiler_combo.setCurrentText(get_compiler_cmd())
+            mode = get_run_mode()
+            self.run_mode_combo.setCurrentIndex(0 if mode == "external" else 1)
+            self.compile_edit.setText(get_compile_flags())
+            self.link_edit.setText(get_link_flags())
+        finally:
+            self.ui_theme_combo.blockSignals(False)
+            self.font_combo.blockSignals(False)
+            self.editor_theme_combo.blockSignals(False)
+            self.compiler_combo.blockSignals(False)
+            self.run_mode_combo.blockSignals(False)
+            self.size_spin.blockSignals(False)
+            self.compile_edit.blockSignals(False)
+            self.link_edit.blockSignals(False)
+        # 编译器版本 / 标准探测（直接调用，不依赖信号）
         self._on_compiler_changed(get_compiler_cmd())
-        mode = get_run_mode()
-        self.run_mode_combo.setCurrentIndex(0 if mode == "external" else 1)
-        self.compile_edit.setText(get_compile_flags())
-        self.link_edit.setText(get_link_flags())
 
     def _on_compiler_changed(self, text: str) -> None:
         gpp = (text or "").strip()
@@ -302,8 +346,48 @@ class SettingsDialog(QDialog):
         self.settings_applied.emit()
         self.accept()
 
+    def _on_ui_theme_changed(self, ui_name: str) -> None:
+        """切换界面主题时，若当前编辑器配色主题与界面明暗不一致，自动同步到对应模式。
+
+        例如切到「亮色」界面时，编辑器配色主题名会从「暗色 · Dracula」变为
+        「亮色 · GitHub」（解决「切换成纯白主题后，编辑器主题名称仍未更改」）。
+        仅当用户主动改界面主题时触发；加载已保存设置时因屏蔽信号不会触发。
+        """
+        ui_light = (ui_name == "亮色")
+        cur_ed = self.editor_theme_combo.currentText()
+        ed_light = cur_ed.startswith("亮色")
+        if ui_light != ed_light:
+            target = "亮色 · GitHub" if ui_light else "暗色 · Dracula"
+            items = [self.editor_theme_combo.itemText(i) for i in range(self.editor_theme_combo.count())]
+            if target in items:
+                self.editor_theme_combo.blockSignals(True)
+                self.editor_theme_combo.setCurrentText(target)
+                self.editor_theme_combo.blockSignals(False)
+        self._on_any_change()
+
+    def _scan_env_compilers(self) -> None:
+        """重新扫描系统（PATH 环境变量 + 标准安装位置），刷新编译器下拉列表。
+
+        不再依赖硬编码路径：只要编译器在 PATH 中，或位于 PATH 目录同级
+        mingw64/ucrt64/clang64 等环境，即可被发现；否则可用「浏览…」手动导入。
+        """
+        compilers = discover_compilers()
+        current = self.compiler_combo.currentText().strip()
+        self.compiler_combo.blockSignals(True)
+        self.compiler_combo.clear()
+        self.compiler_combo.addItems(compilers)
+        idx = self.compiler_combo.findText(current)
+        if idx >= 0:
+            self.compiler_combo.setCurrentIndex(idx)
+        elif current:
+            self.compiler_combo.setCurrentText(current)
+        self.compiler_combo.blockSignals(False)
+        self.compiler_ver_label.setText(f"已扫描到 {len(compilers)} 个编译器")
+        self._on_compiler_changed(self.compiler_combo.currentText())
+
     def _apply_self_style(self) -> None:
         p = ui_palette()
         self.setStyleSheet(dialog_qss(p))
+        self.tabs.setStyleSheet(tab_qss(p))
         for w in self.findChildren(QLabel, "hint"):
             w.setStyleSheet(f"color: {p['text3']}; font-size: 12px;")

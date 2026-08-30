@@ -134,8 +134,9 @@ def write_file_text(path: str | Path, content: str, encoding: str = "utf-8") -> 
 def find_compiler_candidates() -> List[str]:
     """Find available g++ compilers on the system.
 
-    委托给 toolchain.discover_compilers：优先内置 MinGW64，其次本机 MSYS2 /
-    MinGW 安装路径，最后 PATH 中的 g++ / clang++。
+    委托给 toolchain.discover_compilers：优先内置 MinGW64，其次扫描 PATH 环境变量
+    （含同级 mingw64/ucrt64/clang64 等环境）与标准安装位置，最后 PATH 中的
+    g++ / clang++。不再硬编码用户特定路径（如 D:\\MSYS2），找不到时用户可手动浏览导入。
     """
     try:
         from .toolchain import discover_compilers

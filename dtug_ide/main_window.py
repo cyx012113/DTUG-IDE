@@ -171,8 +171,17 @@ class MainWindow(QMainWindow):
     def _build_ui(self) -> None:
         self._ui = ui_palette()
         # 界面字体统一由 QApplication 设置（不在 QSS 里写 QWidget font-family，
-        # 否则会覆盖代码编辑器/控制台的等宽字体，导致「改字体无效」）
-        QApplication.setFont(QFont("Segoe UI", 10))
+        # 否则会覆盖代码编辑器/控制台的等宽字体，导致「改字体无效」）。
+        # 字体族必须带 emoji 回退（Segoe UI Emoji / Noto Color Emoji 等）：
+        # 若只声明单一族，Qt 富文本引擎（消息气泡 QLabel 走 QTextDocument）渲染
+        # 表情时会分配错误的水平步进宽度，emoji 被压成「很窄的一小条」。
+        app_font = QFont()
+        app_font.setFamilies([
+            "Segoe UI", "Microsoft YaHei UI", "Microsoft YaHei",
+            "Segoe UI Emoji", "Noto Color Emoji", "Apple Color Emoji",
+        ])
+        app_font.setPointSize(10)
+        QApplication.setFont(app_font)
         central = QWidget()
         self.setCentralWidget(central)
         main_layout = QHBoxLayout(central)
@@ -279,7 +288,7 @@ class MainWindow(QMainWindow):
 
         self.judge_summary = QLabel("等待评测")
         self.judge_summary.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.judge_summary.setStyleSheet("color: #94a9c9; padding: 8px; background: rgba(0,0,0,0.2); border-radius: 6px;")
+        self.judge_summary.setStyleSheet(self._judge_summary_style("#94a9c9"))
         judge_layout.addWidget(self.judge_summary)
 
         right.addWidget(judge_group)
@@ -758,7 +767,7 @@ class MainWindow(QMainWindow):
             self._log("编译错误 (CE)", "error")
             self._log(result.compile_result.output or "", "error")
             self.judge_summary.setText("编译错误 (CE)")
-            self.judge_summary.setStyleSheet("color: #f87171; padding: 8px; background: rgba(0,0,0,0.2); border-radius: 6px;")
+            self.judge_summary.setStyleSheet(self._judge_summary_style("#f87171"))
             for i in range(self.test_list.topLevelItemCount()):
                 item = self.test_list.topLevelItem(i)
                 if item is not None:
@@ -785,15 +794,15 @@ class MainWindow(QMainWindow):
         rate = ac / total_run * 100 if total_run else 0
         if result.stopped:
             self.judge_summary.setText(f"已停止（AC {ac}/{total_run}，共 {self._judge_total}）")
-            self.judge_summary.setStyleSheet("color: #94a9c9; padding: 8px; background: rgba(0,0,0,0.2); border-radius: 6px; font-weight: bold;")
+            self.judge_summary.setStyleSheet(self._judge_summary_style("#94a9c9", bold=True))
             self._log(f"评测已停止：完成 {total_run}/{self._judge_total}，AC {ac}", "warning")
         else:
             self.judge_summary.setText(f"AC {ac}/{total_run} ({rate:.1f}%)")
             if ac == total_run:
-                self.judge_summary.setStyleSheet("color: #34d399; padding: 8px; background: rgba(0,0,0,0.2); border-radius: 6px; font-weight: bold;")
+                self.judge_summary.setStyleSheet(self._judge_summary_style("#34d399", bold=True))
                 self._log(f"全部通过! AC {ac}/{total_run}", "success")
             else:
-                self.judge_summary.setStyleSheet("color: #fb923c; padding: 8px; background: rgba(0,0,0,0.2); border-radius: 6px; font-weight: bold;")
+                self.judge_summary.setStyleSheet(self._judge_summary_style("#fb923c", bold=True))
                 self._log(f"通过 {ac}/{total_run}", "warning")
 
     def _paint_result_item(self, item: "QTreeWidgetItem", result: "TestResult") -> None:
@@ -1019,6 +1028,13 @@ class MainWindow(QMainWindow):
         if not hasattr(self, "_last_exe"):
             self._last_exe = None
 
+    def _judge_summary_style(self, color: str, bold: bool = False) -> str:
+        """评测结果条样式：背景用主题 selection 色（暗/亮主题都协调），不再写死深色。"""
+        return (
+            f"color:{color};padding:8px;background:{self._ui['selection']};"
+            f"border-radius:6px;{'font-weight:bold;' if bold else ''}"
+        )
+
     def _apply_theme(self) -> None:
         """重新读取主题并应用到主窗口与所有已打开的代码编辑器（设置变更时调用）。"""
         self._ui = ui_palette()
@@ -1044,6 +1060,16 @@ class MainWindow(QMainWindow):
         self.run_tool_btn.setStyleSheet(button_green_qss(self._ui))
         self.judge_tool_btn.setStyleSheet(button_neutral_qss(self._ui))
         self.auth_btn.setStyleSheet(button_neutral_qss(self._ui))
+        # 以下按钮在构建时上了暗色样式表，主题切换时必须重新套用，
+        # 否则会残留旧主题的黑色背景（「有些按钮仍是黑色的」）。
+        self.pause_btn.setStyleSheet(button_neutral_qss(self._ui))
+        self.resume_btn.setStyleSheet(button_neutral_qss(self._ui))
+        self.stop_btn.setStyleSheet(button_danger_qss(self._ui))
+        self.format_tool_btn.setStyleSheet(button_neutral_qss(self._ui))
+        self.datagen_tool_btn.setStyleSheet(button_neutral_qss(self._ui))
+        # 聊天面板（自建样式表，需主动刷新）
+        if hasattr(self, "chat_dock") and self.chat_dock is not None:
+            self.chat_dock.apply_theme()
         self.status_bar.setStyleSheet(statusbar_qss(self._ui))
         self.user_status_label.setStyleSheet(f"color: {self._ui['text3']};")
         tb = self.findChild(QToolBar)

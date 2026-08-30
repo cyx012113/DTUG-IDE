@@ -6,10 +6,10 @@
   * 精简版 (lite)  DTUG-IDE-<ver>-windows-x64.zip
         —— 源码 + 冻结 onedir（内置 Python，开箱即用），不含编译器。
            适合本机已装 MSYS2/MinGW/ucrt64 或 PATH 中有 g++/clang++ 的用户。
-  * 完整版 (full)  DTUG-IDE-<ver>-windows-x64-full.7z
+  * 完整版 (full)  DTUG-IDE-<ver>-windows-x64-full.zip
         —— 精简版 + 轻量 ucrt64 GCC（已剔除文档/证书），
            双击 DTUG-IDE.exe 即可编译运行，无需任何额外环境。
-  * 编译器插件     DTUG-IDE-<ver>-gcc-ucrt64-addon.7z
+  * 编译器插件     DTUG-IDE-<ver>-gcc-ucrt64-addon.zip
         —— 仅 ucrt64 工具链，解压到精简版根目录即等价于完整版
            （包内路径 _internal/dtug_ide/resources/mingw64，与 full 一致；
              app 也会从应用根目录向上回退查找，落点不强制）。
@@ -18,8 +18,9 @@
 release/_staging/mingw64（剔除 share/ etc）。该 ucrt64 已是无 python 的精简
 GCC；app 在调用时会显式传入 --sysroot 使其脱离 MSYS2 也能编译。
 
-7z 使用 py7zr（LZMA2）以获得比 zip deflate 更好的压缩率；精简版仍用 zip 以便
-Windows 原生解压。
+三变体统一使用标准 zip（ZIP_DEFLATED + allowZip64），Windows 资源管理器
+原生即可解压，无需任何第三方解压软件。deflate 压缩率低于 7z 的 LZMA2，但换来
+通用性（实测 full/addon 约 340/130 MB，仍远小于未压体量）。
 
 用法：
     py tools/make_release.py
@@ -34,7 +35,6 @@ import importlib.util as _ilu
 import os
 import shutil
 import sys
-import time
 import traceback
 import zipfile
 from pathlib import Path
@@ -64,8 +64,8 @@ FULL_NAME = f"DTUG-IDE-{VERSION}-windows-x64-full"
 ADDON_NAME = f"DTUG-IDE-{VERSION}-gcc-ucrt64-addon"
 
 LITE_ZIP = RELEASE_DIR / f"{LITE_NAME}.zip"
-FULL_7Z = RELEASE_DIR / f"{FULL_NAME}.7z"
-ADDON_7Z = RELEASE_DIR / f"{ADDON_NAME}.7z"
+FULL_ZIP = RELEASE_DIR / f"{FULL_NAME}.zip"
+ADDON_ZIP = RELEASE_DIR / f"{ADDON_NAME}.zip"
 
 # 源码打包包含
 INCLUDE_DIRS = ["dtug_ide", "docs", "tests", "tools", "packaging"]
@@ -140,7 +140,7 @@ def _copy_onedir(dist: Path) -> None:
 
 
 def _onerr_chmod(func, p, exc):  # noqa: ANN001
-    """rmtree/remove 遇到只读文件（7z 解压产物常见）时清只读位后重试。"""
+    """rmtree/remove 遇到只读文件（解压产物常见）时清只读位后重试。"""
     try:
         os.chmod(p, 0o777)
         func(p)
@@ -165,41 +165,28 @@ def _safe_delete(src: Path) -> None:
 
 
 def _zip_dir(folder: Path, zip_path: Path) -> None:
+    """把 folder 及其内容压缩为 zip，顶层保留 folder 名（相对其父目录）。"""
     if zip_path.exists():
-        _safe_rename_move(zip_path)
-    with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as zf:
+        _safe_delete(zip_path)
+    with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED, allowZip64=True) as zf:
         for p in sorted(folder.rglob("*")):
             if p.is_file():
-                zf.write(p, p.relative_to(folder.parent))
+                zf.write(p, p.relative_to(folder.parent).as_posix())
 
 
-def _sevenzip_dir(folder: Path, arcname: str, archive_path: Path) -> None:
-    import py7zr
+def _zip_dir_with_arc(folder: Path, arcname: str, zip_path: Path) -> None:
+    """把 folder 内容压缩为 zip，内部统一放到 arcname/ 之下（不含 folder 自身名）。
 
-    if archive_path.exists():
-        _safe_rename_move(archive_path)
-    # preset=1：full 包含冻结 onedir（数百 MB 的 DLL/.pyc），preset>=5 的
-    # LZMA2 字典过大、内存峰值过高会偶发被系统杀死（无 traceback）。preset=1
-    # 内存占用极小且仍能取得比 zip deflate 更好的压缩率。
-    filters = [{"id": py7zr.FILTER_LZMA2, "preset": 1}]
-    with py7zr.SevenZipFile(archive_path, "w", filters=filters) as zf:
-        zf.writeall(str(folder), arcname)
-
-
-def _sevenzip_addon(staged: Path, archive_path: Path) -> None:
-    """把暂存编译器打包为 _internal/dtug_ide/resources/mingw64/ 的插件包。
-
-    解压到精简版根目录即等价于完整版（与 full 内落点一致）；
-    app 内置的 bundled_gpp() 也会向上回退查找，因此解压到应用根目录同样可用。
+    用于编译器插件：把暂存 mingw64 放到 _internal/dtug_ide/resources/mingw64/，
+    解压到精简版根目录即等价于完整版（bundled_gpp 也会向上回退查找）。
     """
-    import py7zr
-
-    if archive_path.exists():
-        _safe_rename_move(archive_path)
-    # preset=5：避免大目录 OOM（见 _sevenzip_dir 注释）
-    filters = [{"id": py7zr.FILTER_LZMA2, "preset": 5}]
-    with py7zr.SevenZipFile(archive_path, "w", filters=filters) as zf:
-        zf.writeall(str(staged), "_internal/dtug_ide/resources/mingw64")
+    if zip_path.exists():
+        _safe_delete(zip_path)
+    with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED, allowZip64=True) as zf:
+        for p in sorted(folder.rglob("*")):
+            if p.is_file():
+                rel = p.relative_to(folder).as_posix()
+                zf.write(p, f"{arcname}/{rel}")
 
 
 def _sha256(path: Path) -> str:
@@ -273,20 +260,21 @@ def _main_impl() -> None:
         f"Compiler: 内置 ucrt64 g++，双击 DTUG-IDE.exe 即可编译运行\n"
         f"Python: >=3.10 (frozen)\nLicense: MIT\n",
     )
-    _sevenzip_dir(full, FULL_NAME, FULL_7Z)
-    print(f"[full] lite + ucrt64 -> {FULL_7Z}", flush=True)
+    _zip_dir(full, FULL_ZIP)
+    print(f"[full] lite + ucrt64 -> {FULL_ZIP}", flush=True)
     # 归档完成，清理未压缩工作目录（精简版内容已并入 full；full 已归档）
     _safe_delete(lite)
     _safe_delete(full)
 
     # ---- 3) 编译器插件包（仅 ucrt64）----
-    _safe_delete(ADDON_7Z)
-    _sevenzip_addon(STAGED_COMPILER, ADDON_7Z)
-    print(f"[addon] ucrt64 only -> {ADDON_7Z}", flush=True)
+    _zip_dir_with_arc(
+        STAGED_COMPILER, "_internal/dtug_ide/resources/mingw64", ADDON_ZIP
+    )
+    print(f"[addon] ucrt64 only -> {ADDON_ZIP}", flush=True)
 
     # ---- 校验和 ----
     sums = []
-    for art in (LITE_ZIP, FULL_7Z, ADDON_7Z):
+    for art in (LITE_ZIP, FULL_ZIP, ADDON_ZIP):
         if art.is_file():
             sums.append(f"{_sha256(art)}  {art.name}\n")
     if sums:
@@ -295,7 +283,7 @@ def _main_impl() -> None:
 
     # 体积概览
     print("\n=== 产物体积 ===", flush=True)
-    for art in (LITE_ZIP, FULL_7Z, ADDON_7Z):
+    for art in (LITE_ZIP, FULL_ZIP, ADDON_ZIP):
         if art.is_file():
             mb = art.stat().st_size / (1024 * 1024)
             print(f"  {art.name}: {mb:.1f} MB", flush=True)
