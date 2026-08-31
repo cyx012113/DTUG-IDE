@@ -10,6 +10,7 @@ All notable changes to this project will be documented in this file.
 - 修复「切换成纯白主题后，编辑器主题名称仍未更改」：界面主题与编辑器配色主题原本完全独立。现在切换界面主题时，若当前编辑器配色主题与界面明暗不一致，自动同步到对应模式（亮色界面 → `亮色 · GitHub`，暗色界面 → `暗色 · Dracula`），设置对话框里的「配色主题」名称会随之更新。加载已保存设置时屏蔽信号，不会覆盖用户原有偏好。
 - 修复「编译器选项混在外观和编辑器里」：设置对话框重构为「外观 / 编辑器 / 编译器」三个独立标签页，编译器（C++ 工具链）相关选项完全独立成「编译器」标签页，不再与外观、编辑器混排。
 - 修复「编译器发现硬编码 `D:\MSYS2`」：`toolchain._mingw_roots` 不再硬编码用户特定的 `D:\MSYS2\mingw64` / `D:\MSYS2\ucrt64`，改为：① 标准安装位置（C: 盘常见路径）兜底；② 优先扫描 `PATH` 环境变量（含同级 `mingw64`/`ucrt64`/`clang64` 等环境）动态发现；③ 设置里可「浏览…」手动导入任意 `g++.exe`。新增「扫描环境变量」按钮，随时刷新编译器列表。
+- 修复「启动即崩溃 `RuntimeError: wrapped C/C++ object of type QPushButton has been deleted`」：3.0.1 为 `ChatDock` 新增 `apply_theme()` 时，误把登录/未登录切换栈的装配代码（`QStackedWidget`、`setWidget(central)`、`setMinimumWidth`）写进了 `apply_theme()` 而非 `_build_ui()`，导致构建期 `central` 控件树没有任何存活引用、`__init__` 结束后被垃圾回收、子按钮（含 `_dm_btn`）随之销毁，随后 `_connect_signals()` 连接已死按钮即抛异常。已将该段装配代码移回 `_build_ui()`，`apply_theme()` 仅保留样式刷新。版本号维持 `3.0.1` 不变。
 
 ## 3.0.0 (2026-08-28)
 

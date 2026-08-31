@@ -197,6 +197,16 @@ class ChatDock(QDockWidget):
         self._overlay.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self._overlay.setStyleSheet(f"color:{p['text3']};font-size:13px;")
 
+        # 登录 / 未登录 切换栈
+        stack = QStackedWidget()
+        stack.addWidget(self._overlay)
+        stack.addWidget(logged)
+        self._stack = stack
+        root.addWidget(stack, 1)
+
+        self.setWidget(central)
+        self.setMinimumWidth(360)
+
     # ------------------------------------------------------------------
     def apply_theme(self) -> None:
         """重新读取当前调色板并刷新面板内所有控件（主窗口切换主题时调用）。
@@ -218,15 +228,6 @@ class ChatDock(QDockWidget):
         self._send_btn.setStyleSheet(button_green_qss(p))
         self._emoji_btn.setStyleSheet(button_neutral_qss(p))
         self._overlay.setStyleSheet(f"color:{p['text3']};font-size:13px;")
-
-        stack = QStackedWidget()
-        stack.addWidget(self._overlay)
-        stack.addWidget(logged)
-        self._stack = stack
-        root.addWidget(stack, 1)
-
-        self.setWidget(central)
-        self.setMinimumWidth(360)
 
     def _connect_signals(self) -> None:
         self._dm_btn.clicked.connect(self._on_dm_clicked)
