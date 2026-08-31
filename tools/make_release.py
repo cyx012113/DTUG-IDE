@@ -278,7 +278,10 @@ def _main_impl() -> None:
         if art.is_file():
             sums.append(f"{_sha256(art)}  {art.name}\n")
     if sums:
-        (RELEASE_DIR / "SHA256SUMS.txt").write_text("".join(sums), encoding="utf-8")
+        # 必须用 newline="" 强制 LF：Windows 下 write_text 默认 CRLF，
+        # 会导致 sha256sum -c 校验失败。
+        with (RELEASE_DIR / "SHA256SUMS.txt").open("w", encoding="utf-8", newline="") as fh:
+            fh.write("".join(sums))
         print(f"[sha] wrote SHA256SUMS.txt ({len(sums)} artifacts)", flush=True)
 
     # 体积概览
