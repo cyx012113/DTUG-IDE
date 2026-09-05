@@ -101,6 +101,29 @@ class Compiler:
     def set_link_flags(self, text: str) -> None:
         self.link_flags = _split_flags(text)
 
+    def bin_dir(self) -> str:
+        """返回编译器所在 bin 目录（用于注入 PATH 解析运行时 DLL）。"""
+        try:
+            return os.path.dirname(resolve_ascii_gpp(self.compiler_cmd))
+        except Exception:
+            return ""
+
+    def runtime_env(self) -> dict:
+        """构造子进程环境，把编译器 bin 目录加到 PATH 最前。
+
+        内置 ucrt64 / mingw64 的 g++ 编译出的程序依赖 bin 下的运行时 DLL
+        （libstdc++-6.dll / libgcc_s_seh-1.dll / libwinpthread-1.dll 等）。
+        若用户未把工具链 bin 设为全局环境变量，运行程序会报「找不到 dll」。
+        这里为编译 / 运行子进程显式注入 PATH，无需用户改动全局环境变量。
+        """
+        env = os.environ.copy()
+        bin_dir = self.bin_dir()
+        if bin_dir and os.path.isdir(bin_dir):
+            cur = env.get("PATH", "")
+            if bin_dir not in (cur.split(os.pathsep) if cur else []):
+                env["PATH"] = bin_dir + (os.pathsep + cur if cur else "")
+        return env
+
     def compile(self, source_code: str, extra_flags: Optional[List[str]] = None) -> CompileResult:
         """Compile source code and return result."""
         uid = generate_uid()
@@ -142,6 +165,7 @@ class Compiler:
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
                 creationflags=CREATE_NO_WINDOW,
+                env=self.runtime_env(),
             )
             stdout, stderr = proc.communicate(timeout=30)
             output = _decode_bytes(stdout) + _decode_bytes(stderr)
@@ -181,7 +205,7 @@ class Compiler:
                 f'start "C++ 程序" /D "{self.temp_dir}" cmd /c '
                 f'"chcp 65001 >nul & {exe_path_quoted} & pause"'
             )
-            subprocess.Popen(cmd, shell=True)
+            subprocess.Popen(cmd, shell=True, env=self.runtime_env())
         else:
             subprocess.Popen([exe_path], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
@@ -225,6 +249,7 @@ class Compiler:
                 stderr=subprocess.PIPE,
                 cwd=str(work_dir),
                 creationflags=CREATE_NO_WINDOW,
+                env=self.runtime_env(),
             )
         except Exception as e:
             return RunResult(success=False, stdout="", stderr="", returncode=-1, elapsed=0.0, error=str(e))

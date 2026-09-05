@@ -15,7 +15,7 @@ def tmp_compiler():
     tmp.mkdir(exist_ok=True)
     c = Compiler(tmp)
     yield c
-    c.cleanup()
+    c.cleanup(None)
 
 
 def test_compile_hello(tmp_compiler: Compiler) -> None:
@@ -59,6 +59,6 @@ def test_judge_ac(tmp_compiler: Compiler) -> None:
     je = JudgeEngine(tmp_compiler)
     tests = [TestCase("t1", "1 2\n", "3"), TestCase("t2", "3 5\n", "8")]
     jres = je.judge(code, tests, time_limit=1.0, memory_limit_mb=256.0)
-    assert jres.overall_status == "AC"
+    assert jres.overall_status == "ok"
     for r in jres.results:
         assert r.status == "AC"

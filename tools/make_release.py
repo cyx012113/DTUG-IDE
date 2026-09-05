@@ -1,10 +1,13 @@
 """打包 DTUG IDE 发布物（支持「精简 / 完整 / 编译器插件」三变体）。
 
+发布物不含源码：源码已由 PyInstaller 编译进 onedir 的 PYZ 归档，
+zip 内只携带冻结产物 + 面向用户的文档（README / CHANGELOG / LICENCE）。
+
 版本号单一来源：dtug_ide/version.py。
 
 变体：
   * 精简版 (lite)  DTUG-IDE-<ver>-windows-x64.zip
-        —— 源码 + 冻结 onedir（内置 Python，开箱即用），不含编译器。
+        —— 冻结 onedir（内置 Python，开箱即用），不含编译器、不含源码。
            适合本机已装 MSYS2/MinGW/ucrt64 或 PATH 中有 g++/clang++ 的用户。
   * 完整版 (full)  DTUG-IDE-<ver>-windows-x64-full.zip
         —— 精简版 + 轻量 ucrt64 GCC（已剔除文档/证书），
@@ -67,55 +70,23 @@ LITE_ZIP = RELEASE_DIR / f"{LITE_NAME}.zip"
 FULL_ZIP = RELEASE_DIR / f"{FULL_NAME}.zip"
 ADDON_ZIP = RELEASE_DIR / f"{ADDON_NAME}.zip"
 
-# 源码打包包含
-INCLUDE_DIRS = ["dtug_ide", "docs", "tests", "tools", "packaging"]
-INCLUDE_FILES = [
-    "编译.py",
-    "README.md",
-    "CHANGELOG.md",
-    "LICENCE",
-    "MANIFEST.in",
-    "pyproject.toml",
-    "requirements.txt",
-    ".gitignore",
-]
-
-# 永不打包的目录
-EXCLUDE_DIRS = {".git", "__pycache__", "build", "dist", "release", ".workbuddy",
-                ".ruff_cache", ".pytest_cache", "legacy", ".venv", "venv"}
-# 不随源码打包的编译器目录（精简版不含；完整版由暂存编译器单独放入）
-EXCLUDE_SUBPATHS = {"dtug_ide/resources/mingw64"}
+# 发布包不含源码：源码已由 PyInstaller 编译进 onedir 的 PYZ 归档。
+# 只随发布包携带面向用户的文档，其余（源码 / 测试 / 打包脚本 / 构建配置）一律不带。
+DOC_FILES = ["README.md", "CHANGELOG.md", "LICENCE"]
 
 
-def _is_excluded(rel_parts: tuple[str, ...]) -> bool:
-    if any(part in EXCLUDE_DIRS for part in rel_parts):
-        return True
-    rel = "/".join(rel_parts)
-    return any(rel == sub or rel.startswith(sub + "/") for sub in EXCLUDE_SUBPATHS)
-
-
-def _iter_source_files() -> list[tuple[Path, Path]]:
+def _iter_doc_files() -> list[tuple[Path, Path]]:
     out: list[tuple[Path, Path]] = []
-    for d in INCLUDE_DIRS:
-        base = ROOT / d
-        if not base.is_dir():
-            continue
-        for p in base.rglob("*"):
-            if p.is_file():
-                rel = p.relative_to(ROOT)
-                if _is_excluded(rel.parts):
-                    continue
-                out.append((p, rel))
-    for f in INCLUDE_FILES:
+    for f in DOC_FILES:
         p = ROOT / f
         if p.is_file():
             out.append((p, p.relative_to(ROOT)))
     return sorted(out)
 
 
-def _copy_source(dist: Path) -> int:
+def _copy_docs(dist: Path) -> int:
     n = 0
-    for src, rel in _iter_source_files():
+    for src, rel in _iter_doc_files():
         dst = dist / rel
         dst.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(src, dst)
@@ -220,21 +191,21 @@ def _main_impl() -> None:
     lite = RELEASE_DIR / LITE_NAME
     full = RELEASE_DIR / FULL_NAME
 
-    # ---- 1) 精简版（源码 + 冻结 onedir，无编译器）----
+    # ---- 1) 精简版（冻结 onedir + 文档，无编译器，不含源码）----
     _safe_delete(lite)
     lite.mkdir(parents=True)
-    n = _copy_source(lite)
+    n = _copy_docs(lite)
     _copy_onedir(lite)
     _write_info(
         lite,
         f"DTUG IDE {VERSION}\n"
-        f"Variant: lite (no bundled compiler)\n"
-        f"Build: source + frozen onedir (Python 内置，开箱即用)\n"
+        f"Variant: lite (no bundled compiler, no source)\n"
+        f"Build: frozen onedir (Python 内置，开箱即用) + 文档\n"
         f"Compiler: 需本机 MSYS2/MinGW/ucrt64 或 PATH 中的 g++/clang++\n"
         f"Python: >=3.10 (frozen)\nLicense: MIT\n",
     )
     _zip_dir(lite, LITE_ZIP)
-    print(f"[lite] staged {n} source files + onedir -> {LITE_ZIP}", flush=True)
+    print(f"[lite] staged {n} doc files + onedir -> {LITE_ZIP}", flush=True)
 
     # ---- 2) 完整版（精简版 + 轻量 ucrt64 编译器）----
     _safe_delete(full)
@@ -256,7 +227,7 @@ def _main_impl() -> None:
         full,
         f"DTUG IDE {VERSION}\n"
         f"Variant: full (bundled lightweight ucrt64 GCC)\n"
-        f"Build: source + frozen onedir (Python 内置) + ucrt64 工具链\n"
+        f"Build: frozen onedir (Python 内置) + ucrt64 工具链\n"
         f"Compiler: 内置 ucrt64 g++，双击 DTUG-IDE.exe 即可编译运行\n"
         f"Python: >=3.10 (frozen)\nLicense: MIT\n",
     )

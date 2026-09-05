@@ -973,7 +973,7 @@ class MainWindow(QMainWindow):
                 self._log(result.output, "error")
             return
         self._log("编译成功，启动交互运行…", "success")
-        dlg = InteractiveRunDialog(result.exe_path, self)
+        dlg = InteractiveRunDialog(result.exe_path, self, bin_dir=self.compiler.bin_dir())
         dlg.show()
 
     def _open_data_gen(self) -> None:

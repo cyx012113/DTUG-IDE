@@ -127,6 +127,12 @@ class ChatClient(QObject):
                 return
             self._send_queue.append(text)
 
+    def _run_async(self, fn) -> None:
+        """在后台线程执行一次网络操作，避免阻塞 UI 线程（登录 / 启动时的拉取）。"""
+        worker = _OneShotWorker(fn, self)
+        worker.finished.connect(worker.deleteLater)
+        worker.start()
+
     # ------------------------------------------------------------------
     # HTTP
     # ------------------------------------------------------------------
@@ -200,6 +206,11 @@ class ChatClient(QObject):
             return
 
         msgs: List[dict] = data.get("messages", [])
+        # 房间可能已切换：丢弃旧房间的响应，避免消息串到新会话（「消息加载错乱」）
+        with self._lock:
+            still_current = (self._current_room == room)
+        if not still_current:
+            return
         if msgs:
             new_last = max(int(m.get("id", 0)) for m in msgs)
             with self._lock:
@@ -230,12 +241,17 @@ class ChatClient(QObject):
     # 群组操作（在主线程调用，内部每次起短请求）
     # ------------------------------------------------------------------
     def fetch_groups(self) -> None:
-        try:
-            _s, gdata = self._request("GET", "/groups/mine")
-            if gdata.get("success"):
-                self.conversations_updated.emit(gdata.get("groups", []))
-        except Exception as exc:  # noqa: BLE001
-            self.error.emit(f"获取群组失败：{exc}")
+        """异步拉取群组列表（后台线程，不阻塞 UI）。结果经 conversations_updated 信号返回。"""
+
+        def _do() -> None:
+            try:
+                _s, gdata = self._request("GET", "/groups/mine")
+                if gdata.get("success"):
+                    self.conversations_updated.emit(gdata.get("groups", []))
+            except Exception as exc:  # noqa: BLE001
+                self.error.emit(f"获取群组失败：{exc}")
+
+        self._run_async(_do)
 
     def create_group(self, name: str) -> Optional[str]:
         try:
@@ -268,16 +284,20 @@ class ChatClient(QObject):
     # 私聊云端持久化
     # ------------------------------------------------------------------
     def fetch_dms(self) -> None:
-        """拉取当前用户的私聊会话列表（云端），结果经 dms_updated 信号返回。"""
-        try:
-            _s, data = self._request("GET", "/dms/mine")
-        except Exception as exc:  # noqa: BLE001
-            self.error.emit(f"获取私聊列表失败：{exc}")
-            return
-        if data.get("success"):
-            self.dms_updated.emit(data.get("dms", []) or [])
-        else:
-            self.error.emit(data.get("error", "获取私聊列表失败"))
+        """异步拉取当前用户的私聊会话列表（后台线程），结果经 dms_updated 信号返回。"""
+
+        def _do() -> None:
+            try:
+                _s, data = self._request("GET", "/dms/mine")
+            except Exception as exc:  # noqa: BLE001
+                self.error.emit(f"获取私聊列表失败：{exc}")
+                return
+            if data.get("success"):
+                self.dms_updated.emit(data.get("dms", []) or [])
+            else:
+                self.error.emit(data.get("error", "获取私聊列表失败"))
+
+        self._run_async(_do)
 
     def add_dm(self, peer: str) -> None:
         """记录一条私聊会话到云端（发起私聊时调用；失败不影响本地打开）。"""
@@ -430,6 +450,20 @@ class ChatClient(QObject):
             self.error.emit(data.get("error", "删除消息失败"))
             return False
         return True
+
+
+class _OneShotWorker(QThread):
+    """后台执行一次网络请求；结束后自动销毁。"""
+
+    def __init__(self, fn, parent=None) -> None:
+        super().__init__(parent)
+        self._fn = fn
+
+    def run(self) -> None:  # noqa: N802 - Qt API name
+        try:
+            self._fn()
+        except Exception:  # noqa: BLE001
+            pass
 
 
 class _PollThread(QThread):

@@ -34,8 +34,7 @@ from .chat_widgets import MessageList, StatusPill
 from .theme import (
     button_green_qss,
     button_neutral_qss,
-    group_qss,
-    tree_qss,
+    chat_qss,
     ui_palette,
 )
 
@@ -124,6 +123,9 @@ class ChatDock(QDockWidget):
     def _build_ui(self) -> None:
         p = ui_palette()
         central = QWidget()
+        central.setObjectName("chatRoot")
+        self._central = central
+        central.setStyleSheet(chat_qss(p))
         root = QVBoxLayout(central)
         root.setContentsMargins(8, 8, 8, 8)
         root.setSpacing(8)
@@ -160,7 +162,6 @@ class ChatDock(QDockWidget):
 
         split = QSplitter(Qt.Orientation.Horizontal)
         self._conv_list = QListWidget()
-        self._conv_list.setStyleSheet(tree_qss(p))
         self._conv_list.setMinimumWidth(140)
 
         right = QWidget()
@@ -168,7 +169,6 @@ class ChatDock(QDockWidget):
         rcol.setContentsMargins(0, 0, 0, 0)
         rcol.setSpacing(6)
         self._msg_list = MessageList()
-        self._msg_list.setStyleSheet(group_qss(p))
         self._msg_list.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self._input = QLineEdit()
         self._input.setPlaceholderText("输入消息，回车发送…")
@@ -215,16 +215,16 @@ class ChatDock(QDockWidget):
         重新套用，会残留旧主题的黑色背景。
         """
         from .theme import (
-            ui_palette, button_neutral_qss, button_green_qss, tree_qss, group_qss,
+            ui_palette, button_neutral_qss, button_green_qss, chat_qss,
         )
         p = ui_palette()
+        if hasattr(self, "_central"):
+            self._central.setStyleSheet(chat_qss(p))
         self._title.setStyleSheet("font-weight:bold;font-size:14px;color:" + p["text"] + ";")
         self._dm_btn.setStyleSheet(button_neutral_qss(p))
         self._grp_btn.setStyleSheet(button_neutral_qss(p))
         self._join_btn.setStyleSheet(button_neutral_qss(p))
         self._manage_btn.setStyleSheet(button_neutral_qss(p))
-        self._conv_list.setStyleSheet(tree_qss(p))
-        self._msg_list.setStyleSheet(group_qss(p))
         self._send_btn.setStyleSheet(button_green_qss(p))
         self._emoji_btn.setStyleSheet(button_neutral_qss(p))
         self._overlay.setStyleSheet(f"color:{p['text3']};font-size:13px;")
@@ -360,11 +360,15 @@ class ChatDock(QDockWidget):
 
     def _on_groups(self, groups: List[Dict[str, Any]]) -> None:
         """/groups/mine 返回（整表刷新）：替换本地群列表后重建会话列表。"""
+        if not self._logged_in:
+            return
         self._groups = list(groups or [])
         self._rebuild_conv_list()
 
     def _on_dms(self, dms: List[Dict[str, Any]]) -> None:
         """云端私聊会话恢复：刷新 / 换设备后仍能拿回私聊列表。"""
+        if not self._logged_in:
+            return
         for entry in dms or []:
             room = str(entry.get("room") or "")
             if not room.startswith("dm:"):

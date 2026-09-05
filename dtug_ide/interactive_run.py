@@ -58,9 +58,10 @@ class _ReaderThread(QThread):
 class InteractiveRunDialog(QDialog):
     """交互式运行窗口。"""
 
-    def __init__(self, exe_path: str, parent=None) -> None:
+    def __init__(self, exe_path: str, parent=None, bin_dir: str = "") -> None:
         super().__init__(parent)
         self.exe_path = exe_path
+        self.bin_dir = bin_dir
         self.proc: Optional[subprocess.Popen] = None
         self.reader: Optional[_ReaderThread] = None
         self.setWindowTitle("交互运行 - DTUG IDE")
@@ -104,6 +105,11 @@ class InteractiveRunDialog(QDialog):
         root.addWidget(self.status)
 
     def _start(self) -> None:
+        env = os.environ.copy()
+        if self.bin_dir and os.path.isdir(self.bin_dir):
+            cur = env.get("PATH", "")
+            if self.bin_dir not in (cur.split(os.pathsep) if cur else []):
+                env["PATH"] = self.bin_dir + (os.pathsep + cur if cur else "")
         try:
             self.proc = subprocess.Popen(
                 [self.exe_path],
@@ -112,6 +118,7 @@ class InteractiveRunDialog(QDialog):
                 stderr=subprocess.PIPE,
                 cwd=os.path.dirname(self.exe_path) or ".",
                 creationflags=CREATE_NO_WINDOW,
+                env=env,
             )
         except Exception as e:
             self.output.appendPlainText(f"启动失败: {e}")

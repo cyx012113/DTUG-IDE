@@ -312,6 +312,17 @@ def tree_qss(p: Dict[str, str]) -> str:
     """
 
 
+def chat_qss(p: Dict[str, str]) -> str:
+    """聊天面板样式：消息列表 / 会话列表 / 输入框背景随主题，避免暗色下白板。"""
+    return f"""
+        QWidget#chatRoot {{ background: {p['panel']}; }}
+        QListWidget {{ background: {p['panel']}; color: {p['text']}; border: 1px solid {p['border']}; border-radius: 6px; }}
+        QListWidget::item {{ padding: 4px; }}
+        QListWidget::item:selected {{ background: {p['selection']}; }}
+        QLineEdit {{ background: {p['input_bg']}; color: {p['text']}; border: 1px solid {p['border']}; border-radius: 4px; padding: 4px; }}
+    """
+
+
 def button_green_qss(p: Dict[str, str]) -> str:
     return (
         f"QPushButton {{ background: qlineargradient(x1:0,y1:0,x2:1,y2:1,"
