@@ -9,8 +9,8 @@ import tempfile
 from pathlib import Path
 from typing import List, Optional
 
-from PyQt6.QtCore import Qt, QSettings, QSize, QThread, pyqtSignal
-from PyQt6.QtGui import QAction, QBrush, QColor, QFont, QIcon, QKeySequence, QShortcut
+from PyQt6.QtCore import Qt, QSettings, QSize, QThread, QTimer, QUrl, pyqtSignal
+from PyQt6.QtGui import QAction, QBrush, QColor, QDesktopServices, QFont, QIcon, QKeySequence, QShortcut
 from PyQt6.QtWidgets import (
     QApplication, QComboBox, QDialog, QDialogButtonBox, QFileDialog,
     QFormLayout, QGroupBox, QHBoxLayout, QHeaderView, QLabel, QLineEdit,
@@ -23,6 +23,7 @@ from PyQt6.QtWidgets import (
 )
 
 from .auth import AuthClient
+from .client_sig import default_signer, token_sid
 from .compiler import Compiler, CompileResult
 from .editor import CodeEditor
 from .formatter import format_cpp
@@ -30,7 +31,11 @@ from .interactive_run import InteractiveRunDialog
 from .data_generator import DataGenDialog
 from .judge import JudgeControl, JudgeEngine, JudgeResult, TestCase, TestResult
 from .login_dialog import LoginDialog
+from .problem_dialog import ProblemEditDialog
+from .problem_panel import ProblemDock
+from .problem_store import ProblemInfo, ProblemStore, default_root
 from .settings_dialog import SettingsDialog
+from .stress import StressDialog
 from .theme import (
     button_danger_qss, button_green_qss, button_neutral_qss,
     console_qss, dialog_qss, get_compile_flags, get_compiler_cmd, get_cpp_std,
@@ -167,6 +172,7 @@ class MainWindow(QMainWindow):
         self._new_file()
         self._restore_settings()
         self._init_auth()
+        self._init_problems()
 
     def _build_ui(self) -> None:
         self._ui = ui_palette()
@@ -392,12 +398,22 @@ class MainWindow(QMainWindow):
         run_menu.addAction(self.interactive_act)
         self.datagen_act = QAction("数据生成 (&G)", self)
         run_menu.addAction(self.datagen_act)
+        self.stress_act = QAction("对拍 (&S)", self)
+        run_menu.addAction(self.stress_act)
 
         edit_menu = menubar.addMenu("编辑 (&E)")
         self.default_code_act = QAction("默认代码模板 (&D)", self)
         edit_menu.addAction(self.default_code_act)
         self.format_act = QAction("格式化代码 (Ctrl+Shift+A)", self)
         edit_menu.addAction(self.format_act)
+
+        problem_menu = menubar.addMenu("题目 (&P)")
+        self.problem_new_act = QAction("新建题目 (&N)", self)
+        problem_menu.addAction(self.problem_new_act)
+        self.problem_reload_act = QAction("刷新题库 (&R)", self)
+        problem_menu.addAction(self.problem_reload_act)
+        self.problem_root_act = QAction("题库目录… (&D)", self)
+        problem_menu.addAction(self.problem_root_act)
 
         settings_menu = menubar.addMenu("设置 (&T)")
         self.pref_act = QAction("外观与编辑器… (&P)", self)
@@ -441,6 +457,8 @@ class MainWindow(QMainWindow):
         toolbar.addWidget(self.auth_btn)
 
         self.user_menu = QMenu(self)
+        self.rename_act = QAction("修改用户名…", self)
+        self.user_menu.addAction(self.rename_act)
         self.logout_act = QAction("退出登录", self)
         self.user_menu.addAction(self.logout_act)
 
@@ -457,9 +475,15 @@ class MainWindow(QMainWindow):
         self.judge_act.triggered.connect(self._start_judge)
         self.interactive_act.triggered.connect(self._interactive_run)
         self.datagen_act.triggered.connect(self._open_data_gen)
+        self.stress_act.triggered.connect(self._open_stress)
         self.default_code_act.triggered.connect(self._edit_default_code)
         self.format_act.triggered.connect(self._format_current)
+        self.problem_new_act.triggered.connect(self._problem_new)
+        self.problem_reload_act.triggered.connect(self._problem_reload)
+        self.problem_root_act.triggered.connect(self._problem_choose_root)
         self.pref_act.triggered.connect(self._open_settings)
+        self.rename_act.triggered.connect(self._change_username)
+        self.logout_act.triggered.connect(self._logout)
         self.run_tool_btn.clicked.connect(self._compile_run)
         self.format_tool_btn.clicked.connect(self._format_current)
         self.datagen_tool_btn.clicked.connect(self._open_data_gen)
@@ -477,7 +501,12 @@ class MainWindow(QMainWindow):
         self.add_quick_btn.clicked.connect(self._add_quick_test)
         self.run_quick_btn.clicked.connect(self._run_quick_test)
         self.auth_btn.clicked.connect(self._open_login)
-        self.logout_act.triggered.connect(self._logout)
+        # 令牌滑动续签：每 30 分钟调一次 /me，剩余寿命不足 12h 时服务端会下发
+        # 新 token（响应里带回），_refresh_token 负责写回本地 —— 否则 24h 后必掉线。
+        # 定时器在 _start_chat（已登录）时启动、_stop_chat 时停止。
+        self._refresh_timer = QTimer(self)
+        self._refresh_timer.setInterval(30 * 60 * 1000)
+        self._refresh_timer.timeout.connect(self._refresh_token)
 
     def _get_current_editor(self) -> Optional[CodeEditor]:
         w = self.tab_widget.currentWidget()
@@ -991,6 +1020,13 @@ class MainWindow(QMainWindow):
         self._render_tests()
         self._log(f"数据生成：已导入 {len(cases)} 组测试用例", "success")
 
+    def _open_stress(self) -> None:
+        """打开对拍器：当前编辑器代码自动填入「待测程序」."""
+        editor = self._get_current_editor()
+        code = editor.toPlainText() if editor is not None else ""
+        dlg = StressDialog(self.compiler, code, self)
+        dlg.show()
+
     def _log(self, text: str, level: str = "info") -> None:
         import html as html_module
         colors = {"info": "#94a9c9", "success": "#34d399", "error": "#f87171", "warning": "#fb923c"}
@@ -1070,6 +1106,9 @@ class MainWindow(QMainWindow):
         # 聊天面板（自建样式表，需主动刷新）
         if hasattr(self, "chat_dock") and self.chat_dock is not None:
             self.chat_dock.apply_theme()
+        # 题目面板（同样自建样式表）
+        if hasattr(self, "problem_dock") and self.problem_dock is not None:
+            self.problem_dock.apply_theme()
         self.status_bar.setStyleSheet(statusbar_qss(self._ui))
         self.user_status_label.setStyleSheet(f"color: {self._ui['text3']};")
         tb = self.findChild(QToolBar)
@@ -1092,6 +1131,8 @@ class MainWindow(QMainWindow):
         from .chat_client import ChatClient
         from .chat_panel import ChatDock
         self.chat_client = ChatClient()
+        # 令牌失效（401）：清理凭证并引导重新登录（见 _on_chat_auth_expired）
+        self.chat_client.auth_expired.connect(self._on_chat_auth_expired)
         self.chat_dock = ChatDock(self.chat_client, self)
         self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, self.chat_dock)
         self.chat_dock.setAllowedAreas(
@@ -1112,10 +1153,25 @@ class MainWindow(QMainWindow):
         self._validate_worker.finished.connect(self._validate_worker.deleteLater)
         self._validate_worker.start()
 
+    def _store_token(self, token: str) -> None:
+        """把（可能被滑动续签刷新过的）token 写回本地凭证。"""
+        if not token:
+            return
+        if token != self.token:
+            self.token = token
+        # 与登录时一致：仅当用户勾了「记住我」才持久化；没记住就只更新内存，
+        # 重启后仍需重新登录（不擅自落盘）。
+        if self.settings.value("auth_token", ""):
+            self.settings.setValue("auth_token", token)
+
     def _on_token_validated(self, ok: bool, data) -> None:
         self.auth_btn.setEnabled(True)
         if ok and isinstance(data, dict):
             self.current_user = data
+            # /me 滑动续签（剩余寿命不足 12h）会下发新 token，必须写回，否则 24h 后掉线
+            fresh = data.get("token")
+            if isinstance(fresh, str) and fresh:
+                self._store_token(fresh)
             self._update_user_ui()
             self._start_chat()
             self._log(f"已恢复登录：{data.get('username', '')}", "success")
@@ -1125,6 +1181,27 @@ class MainWindow(QMainWindow):
             self.settings.remove("auth_token")
             self._stop_chat()
             self._update_user_ui()
+
+    def _refresh_token(self) -> None:
+        """周期性滑动续签：调 /me 捕获服务端下发的新 token（见 _on_token_validated）。"""
+        if not self.token or not self.current_user:
+            return
+        self._validate_worker = TokenValidateWorker(self.auth_client, self.token)
+        self._validate_worker.done.connect(self._on_token_validated)
+        self._validate_worker.finished.connect(self._validate_worker.deleteLater)
+        self._validate_worker.start()
+
+    def _on_chat_auth_expired(self) -> None:
+        """聊天轮询收到 401：令牌失效（过期 / 改密后 tv 递增 / 被吊销）。
+        清理本地凭证、停掉轮询与续签定时器，提示重新登录。"""
+        if not self.token:
+            return
+        self._stop_chat()
+        self.token = ""
+        self.current_user = None
+        self.settings.remove("auth_token")
+        self._update_user_ui()
+        self._log("⚠️ 登录已失效（令牌过期或被吊销），请重新登录", "error")
 
     def _open_login(self) -> None:
         if self.token and self.current_user:
@@ -1144,6 +1221,86 @@ class MainWindow(QMainWindow):
         self._start_chat()
         self._log(f"已登录：{user.get('username', '')}", "success")
 
+    def _change_username(self) -> None:
+        """修改用户名（2026-10 主页新机制）：PUT /update-profile，服务端在用户名
+        真变化时重签新 token —— 必须替换本地凭证并刷新聊天会话（房间名含用户名）。"""
+        if not self.token or not self.current_user:
+            return
+        old_name = str(self.current_user.get("username") or "")
+        dlg = QDialog(self)
+        dlg.setWindowTitle("修改用户名")
+        dlg.setMinimumWidth(380)
+        dlg.setStyleSheet(dialog_qss(ui_palette()))
+        root = QVBoxLayout(dlg)
+        root.setSpacing(10)
+        root.setContentsMargins(18, 18, 18, 18)
+        hint = QLabel(
+            "3～50 位，仅限字母、数字、下划线、连字符。修改成功后需要重新登录聊天会话。"
+        )
+        hint.setWordWrap(True)
+        hint.setStyleSheet(f"color: {ui_palette()['text2']}; font-size: 12px;")
+        root.addWidget(hint)
+        edit = QLineEdit(dlg)
+        edit.setText(old_name)
+        edit.setPlaceholderText("新用户名")
+        root.addWidget(edit)
+        err = QLabel("")
+        err.setWordWrap(True)
+        err.setStyleSheet("color: #f87171; font-size: 12px;")
+        root.addWidget(err)
+        btns = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel,
+            parent=dlg,
+        )
+        root.addWidget(btns)
+        btns.accepted.connect(dlg.accept)
+        btns.rejected.connect(dlg.reject)
+        if dlg.exec() != QDialog.DialogCode.Accepted:
+            return
+        new_name = edit.text().strip()
+        if not new_name or new_name == old_name:
+            return
+
+        class _RenameWorker(QThread):
+            done = pyqtSignal(bool, object)
+
+            def __init__(self, client: AuthClient, token: str, username: str) -> None:
+                super().__init__()
+                self.client = client
+                self.token = token
+                self.username = username
+
+            def run(self) -> None:
+                ok, data = self.client.update_profile(self.token, username=self.username)
+                self.done.emit(ok, data)
+
+        self.auth_btn.setEnabled(False)
+        self.user_status_label.setText("正在修改用户名...")
+        self._rename_worker = _RenameWorker(self.auth_client, self.token, new_name)
+        self._rename_worker.done.connect(self._on_rename_done)
+        self._rename_worker.finished.connect(self._rename_worker.deleteLater)
+        self._rename_worker.start()
+
+    def _on_rename_done(self, ok: bool, data) -> None:
+        self.auth_btn.setEnabled(True)
+        if not ok or not isinstance(data, dict):
+            msg = str((data or {}).get("error", "修改失败") if isinstance(data, dict) else data)
+            self._log(f"❌ 修改用户名失败：{msg}", "error")
+            self._update_user_ui()
+            return
+        # 改名成功：服务端重签的新 token 必须写回（旧 token 的 username 快照已过期）
+        fresh = data.get("token")
+        if isinstance(fresh, str) and fresh:
+            self._store_token(fresh)
+        new_name = str(data.get("username") or self.current_user.get("username") or "")
+        self.current_user = dict(self.current_user or {})
+        self.current_user["username"] = new_name
+        self._update_user_ui()
+        # 私聊房间名 dm:<a>~<b> 含用户名：换凭证重连，避免旧房间名对不上
+        self._stop_chat()
+        self._start_chat()
+        self._log(f"✅ 用户名已修改为：{new_name}", "success")
+
     def _logout(self) -> None:
         self._stop_chat()
         self.token = ""
@@ -1152,6 +1309,142 @@ class MainWindow(QMainWindow):
         self.auth_btn.setMenu(None)
         self._update_user_ui()
         self._log("已退出登录", "info")
+
+    # ---------- 题目管理（本地题库） ----------
+    def _problem_root(self) -> Path:
+        saved = self.settings.value("problems_root", "")
+        return Path(saved) if saved else default_root()
+
+    def _init_problems(self) -> None:
+        self.problem_store = ProblemStore(self._problem_root())
+        self._rebuild_problem_dock()
+
+    def _rebuild_problem_dock(self) -> None:
+        """（重）建题目停靠面板并接线；题库目录变化时整体重建。"""
+        old = getattr(self, "problem_dock", None)
+        if old is not None:
+            try:
+                self.removeDockWidget(old)
+                old.deleteLater()
+            except Exception:
+                pass
+        dock = ProblemDock(self.problem_store, self)
+        dock.new_requested.connect(self._problem_new)
+        dock.edit_requested.connect(self._problem_edit)
+        dock.delete_requested.connect(self._problem_delete)
+        dock.load_samples_requested.connect(self._problem_load_samples)
+        dock.save_solution_requested.connect(self._problem_save_solution)
+        dock.open_solution_requested.connect(self._problem_open_solution)
+        dock.open_dir_requested.connect(self._problem_open_dir)
+        self.addDockWidget(Qt.DockWidgetArea.LeftDockWidgetArea, dock)
+        self.problem_dock = dock
+
+    def _problem_new(self) -> None:
+        dlg = ProblemEditDialog(self, edit=None)
+        if dlg.exec() != QDialog.DialogCode.Accepted:
+            return
+        v = dlg.values()
+        info = self.problem_store.create(
+            v["title"],
+            source=v["source"],
+            tags=v["tags"],
+            time_limit=v["time_limit"],
+            memory_limit=v["memory_limit"],
+            description=v["description"],
+        )
+        self.problem_dock.reload()
+        self._log(f"已新建题目：{info.title}（{info.pid}）", "success")
+
+    def _problem_edit(self, info: ProblemInfo) -> None:
+        dlg = ProblemEditDialog(self, edit=info)
+        if dlg.exec() != QDialog.DialogCode.Accepted:
+            return
+        v = dlg.values()
+        info.title = v["title"] or info.title
+        info.source = v["source"]
+        info.tags = v["tags"]
+        info.time_limit = v["time_limit"]
+        info.memory_limit = v["memory_limit"]
+        info.description = v["description"]
+        self.problem_store.update(info)
+        self.problem_dock.reload()
+        self._log(f"已更新题目：{info.title}", "success")
+
+    def _problem_delete(self, info: ProblemInfo) -> None:
+        ret = QMessageBox.question(
+            self, "删除题目",
+            f"确定删除「{info.title}」？\n该题目的数据与解答将一并删除，不可恢复。",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        if ret != QMessageBox.StandardButton.Yes:
+            return
+        self.problem_store.delete(info.pid)
+        self.problem_dock.reload()
+        self._log(f"已删除题目：{info.title}", "info")
+
+    def _problem_reload(self) -> None:
+        self.problem_dock.reload()
+        self._log("题库已刷新", "info")
+
+    def _problem_choose_root(self) -> None:
+        cur = str(self._problem_root())
+        path = QFileDialog.getExistingDirectory(self, "选择题库目录", cur)
+        if not path:
+            return
+        self.settings.setValue("problems_root", path)
+        self.problem_store = ProblemStore(Path(path))
+        self._rebuild_problem_dock()
+        self._log(f"题库目录已切换：{path}", "success")
+
+    def _problem_load_samples(self, info: ProblemInfo) -> None:
+        """把题目 data/ 下的样例加载为当前标签的测试用例，并直接开跑评测。"""
+        tab = self._current_tab()
+        if not tab:
+            QMessageBox.information(self, "提示", "请先打开一个代码标签页")
+            return
+        cases = self.problem_store.sample_cases(info)
+        if not cases:
+            QMessageBox.information(
+                self, "提示", f"「{info.title}」还没有配对完整的样例数据（data/*.in + *.out）"
+            )
+            return
+        tab.tests.extend(cases)
+        self._render_tests()
+        self._log(f"已加载「{info.title}」{len(cases)} 组样例，开始评测", "info")
+        self._start_judge()
+
+    def _problem_save_solution(self, info: ProblemInfo) -> None:
+        editor = self._get_current_editor()
+        if not editor:
+            QMessageBox.information(self, "提示", "请先打开解答代码")
+            return
+        code = editor.toPlainText()
+        if not code.strip():
+            QMessageBox.information(self, "提示", "当前代码为空")
+            return
+        path = self.problem_store.save_solution(info, code)
+        self.problem_dock.reload()
+        self._log(f"已保存解答：{path}", "success")
+
+    def _problem_open_solution(self, info: ProblemInfo) -> None:
+        path = info.solution_path()
+        if not path.is_file():
+            QMessageBox.information(self, "提示", "该题目还没有保存过解答")
+            return
+        content = read_file_text(path)
+        tab = FileTab(name=path.name, path=str(path), content=content)
+        self.tabs.append(tab)
+        editor = CodeEditor()
+        editor.setPlainText(content)
+        editor.textChanged.connect(self._on_text_changed)
+        editor.cursorPositionChanged.connect(self._update_cursor_status)
+        self.tab_widget.addTab(editor, path.name)
+        self.tab_widget.setCurrentIndex(self.tab_widget.count() - 1)
+        self._update_status()
+
+    def _problem_open_dir(self, info: ProblemInfo) -> None:
+        QDesktopServices.openUrl(QUrl.fromLocalFile(str(info.dir or self.problem_store.root)))
 
     # ---------- 聊天（对接 chat-worker） ----------
     def _start_chat(self) -> None:
@@ -1169,6 +1462,9 @@ class MainWindow(QMainWindow):
             self.current_user.get("is_op", False),
         )
         self.chat_dock.setVisible(True)
+        # 登录态稳定后启动令牌滑动续签定时器（30 分钟一次）
+        if hasattr(self, "_refresh_timer"):
+            self._refresh_timer.start()
 
     def _stop_chat(self) -> None:
         if hasattr(self, "chat_client"):
@@ -1176,14 +1472,25 @@ class MainWindow(QMainWindow):
             self.chat_client.clear_credentials()
         if hasattr(self, "chat_dock"):
             self.chat_dock.set_logged_in(False)
+        if hasattr(self, "_refresh_timer"):
+            self._refresh_timer.stop()
 
     def _update_user_ui(self) -> None:
         if self.current_user:
             name = self.current_user.get("username", "用户")
             tag = self.current_user.get("tag") or ("[管理员]" if self.current_user.get("is_op") else "")
+            # 客户端绑定签名状态（2026-10 新机制）：令牌 sid 与本机私钥匹配时，
+            # 所有请求都带签名头 —— 令牌被偷也无法在别的机器上冒用。
+            sig_mark = ""
+            try:
+                sid = token_sid(getattr(self, "token", "") or "")
+                if sid and sid == default_signer().bound_sid():
+                    sig_mark = " 🔒签名保护"
+            except Exception:
+                pass
             self.auth_btn.setText(f"👤 {name}")
             self.auth_btn.setMenu(self.user_menu)
-            self.user_status_label.setText(f"已登录：{name} {tag}".rstrip())
+            self.user_status_label.setText(f"已登录：{name} {tag}{sig_mark}".rstrip())
         else:
             self.auth_btn.setText("🔐 登录")
             self.auth_btn.setMenu(None)

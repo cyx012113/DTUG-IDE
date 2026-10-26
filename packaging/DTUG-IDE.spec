@@ -56,6 +56,11 @@ a = Analysis(
         "dtug_ide.data_generator",
         # 工具链管理（编译器发现 / C++ 标准检测；多处为函数内懒导入，需显式声明）
         "dtug_ide.toolchain",
+        # 客户端绑定签名（ECDSA P-256；PyInstaller 对 cryptography 的 Rust
+        # 扩展 _rust 依赖 hook 收集，这里显式声明双保险）
+        "dtug_ide.client_sig",
+        "cryptography",
+        "cryptography.hazmat.primitives.asymmetric.ec",
         # 聊天面板（复制自 Chat-online，依赖 markdown 渲染第三方库）
         "dtug_ide.chat_client",
         "dtug_ide.chat_panel",

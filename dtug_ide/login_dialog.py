@@ -44,7 +44,12 @@ class _AuthWorker(QThread):
     def run(self) -> None:
         ok, me = self.client.get_me(self.token)
         if ok and isinstance(me, dict):
-            self.done.emit(True, {"token": self.token, "user": me}, "token")
+            # /me 滑动续签（令牌剩余不足 12h）会下发新 token：优先采用，
+            # 否则 24h 后必掉线。续签令牌仍带原 sid，客户端签名不受影响。
+            fresh = me.get("token")
+            token = fresh if isinstance(fresh, str) and fresh else self.token
+            user = {k: v for k, v in me.items() if k not in ("token", "token_refreshed")}
+            self.done.emit(True, {"token": token, "user": user}, "token")
         else:
             self.done.emit(False, me if isinstance(me, dict) else {"error": "无效的 token"}, "token")
 

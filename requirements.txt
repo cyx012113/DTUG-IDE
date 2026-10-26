@@ -1,3 +1,4 @@
 PyQt6>=6.7,<7
 PyQt6-WebEngine>=6.7,<7
 psutil>=6,<7
+cryptography>=42  # 客户端绑定签名（ECDSA P-256），见 dtug_ide/client_sig.py

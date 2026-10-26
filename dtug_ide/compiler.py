@@ -36,13 +36,24 @@ def _decode_bytes(data: bytes) -> str:
 
     依次尝试 utf-8 / gbk / latin-1，最后回退到 utf-8(replace)，彻底避免
     中文或混合编码导致的解码异常（「输出中文可能会爆掉」的根因之一）。
+
+    CRLF 折叠：MinGW/UCRT 的 libstdc++ 默认以 MSVCRT **文本模式**打开
+    stdout，程序里的 ``'\\n'`` 会被运行时改写成 ``'\\r\\n'`` —— 这是平台
+    假象而非程序逻辑输出的一部分。若不折叠，数据生成器产出的 .in、
+    对拍保存的 input.txt 都会混入 ``\\r``，喂回程序即污染数据（字符串题
+    直接读错）。这里统一把 ``\\r\\n`` 折成 ``\\n``（单独的 ``\\r`` 保留，
+    不影响进度条刷新类输出）。
     """
+    text = None
     for enc in ("utf-8", "gbk", "latin-1"):
         try:
-            return data.decode(enc)
+            text = data.decode(enc)
+            break
         except UnicodeDecodeError:
             continue
-    return data.decode("utf-8", errors="replace")
+    if text is None:
+        text = data.decode("utf-8", errors="replace")
+    return text.replace("\r\n", "\n")
 
 
 @dataclass

@@ -1,9 +1,14 @@
 """聊天后端客户端：通过 HTTP 轮询 chat-worker，复用 DTUG-IDE 现有登录 token。
 
 - 鉴权：请求头 ``Authorization: Bearer <token>``，token 即 DTUG-IDE 登录后拿到的 JWT。
+- 客户端绑定签名（2026-10 主页新机制）：token payload 带 sid 且与本机私钥匹配时，
+  每个请求附带 ``X-Client-Sid/Sig/Ts/Nonce``（见 client_sig.py）；否则不带头，
+  服务端走兼容放行。token 被偷也无法在别的机器上冒用。
 - 传输：标准库 ``urllib``（无第三方依赖）；网络请求放在后台线程，避免阻塞 UI。
 - 实时性：客户端每 1.5s 轮询一次 ``/poll``，聊天延迟约 1–2s（对聊天无感）。
 - 房间命名：私聊 ``dm:<a>~<b>``（a,b 字典序小写），群聊 ``grp:<group_id>``。
+- 令牌失效：轮询收到 401 时发出 ``auth_expired`` 信号，由 UI 清理凭证并引导重新登录
+  （令牌有效期 24h；/me 的滑动续签由主窗口周期性调用 auth.get_me 捕获新 token）。
 """
 
 from __future__ import annotations
@@ -16,6 +21,9 @@ import urllib.error
 import urllib.request
 
 from PyQt6.QtCore import QObject, QThread, pyqtSignal
+
+from .client_sig import default_signer
+from .version import __version__
 
 CHAT_BASE_URL = "https://chat-worker.cyx012113.top"
 
@@ -51,6 +59,7 @@ class ChatClient(QObject):
     conversations_updated = pyqtSignal(list)
     dms_updated = pyqtSignal(list)  # 云端私聊会话列表：[{room, peer}, ...]
     error = pyqtSignal(str)
+    auth_expired = pyqtSignal()  # 令牌失效（401）：提示重新登录
 
     def __init__(self, base_url: str = CHAT_BASE_URL, parent: Optional[QObject] = None) -> None:
         super().__init__(parent)
@@ -66,6 +75,7 @@ class ChatClient(QObject):
         self._groups_counter = 0
         self._thread: Optional["_PollThread"] = None
         self._lock = threading.RLock()
+        self._auth_dead = False  # 令牌已失效：暂停轮询，避免 401 请求风暴
 
     # ------------------------------------------------------------------
     # 凭证
@@ -75,6 +85,7 @@ class ChatClient(QObject):
             self._token = token or ""
             self._username = username or ""
             self._is_op = bool(is_op)
+            self._auth_dead = False  # 新凭证（含重新登录 / 改名后重设）解除失效锁
 
     def clear_credentials(self) -> None:
         with self._lock:
@@ -148,8 +159,11 @@ class ChatClient(QObject):
         data = None
         headers = {
             "Authorization": f"Bearer {auth}",
-            "User-Agent": "DTUG-IDE/2.3.3",
+            "User-Agent": f"DTUG-IDE/{__version__}",
         }
+        # 客户端绑定签名：token 带 sid 且与本机私钥匹配时才附加 X-Client-*，
+        # 否则 headers_for 返回 {}（服务端对无 sid 请求兼容放行）。
+        headers.update(default_signer().headers_for(method, path, auth))
         if body is not None:
             data = json.dumps(body).encode("utf-8")
             headers["Content-Type"] = "application/json"
@@ -173,6 +187,8 @@ class ChatClient(QObject):
     # ------------------------------------------------------------------
     def _poll_once(self) -> None:
         with self._lock:
+            if self._auth_dead:
+                return  # 令牌已失效，等 UI 重新登录后再恢复
             token = self._token
             room = self._current_room
             last_id = self._last_id
@@ -188,17 +204,32 @@ class ChatClient(QObject):
         # 1) 处理待发送队列
         for text in queue:
             try:
-                self._request("POST", "/send", {"room": room, "text": text}, token=token)
+                status, _payload = self._request(
+                    "POST", "/send", {"room": room, "text": text}, token=token
+                )
+                if status == 401:
+                    # 令牌失效（过期 / tv 递增 / 被吊销）：通知 UI 重新登录，
+                    # 剩余队列不再重试（避免无效请求风暴）。
+                    with self._lock:
+                        self._auth_dead = True
+                    self.auth_expired.emit()
+                    return
             except Exception as exc:  # noqa: BLE001
                 self.error.emit(f"发送失败：{exc}")
 
         # 2) 拉取新消息
         try:
-            _status, data = self._request(
+            status, data = self._request(
                 "GET", f"/poll?room={quote(room, safe='~')}&after={last_id}", token=token
             )
         except Exception as exc:  # noqa: BLE001
             self.error.emit(f"接收失败：{exc}")
+            return
+
+        if status == 401:
+            with self._lock:
+                self._auth_dead = True
+            self.auth_expired.emit()
             return
 
         if not data.get("success"):

@@ -16,6 +16,7 @@ http://127.0.0.1:<PORT>/callback?token=... 的导航，从而拿到 token 完成
 from __future__ import annotations
 
 import http.server
+import json
 import threading
 from typing import Any, Dict, Optional
 from urllib.parse import urlparse, parse_qs, quote
@@ -25,10 +26,11 @@ from PyQt6.QtGui import QDesktopServices
 from PyQt6.QtWidgets import (
     QDialog, QHBoxLayout, QLabel, QPushButton, QVBoxLayout,
 )
-from PyQt6.QtWebEngineCore import QWebEnginePage, QWebEngineSettings
+from PyQt6.QtWebEngineCore import QWebEnginePage, QWebEngineScript, QWebEngineSettings
 from PyQt6.QtWebEngineWidgets import QWebEngineView
 
 from .auth import AuthClient, HOME_LOGIN_URL, HOME_URL
+from .client_sig import default_signer, token_sid
 from .theme import dialog_qss, ui_palette
 
 CALLBACK_PORT = 8731
@@ -41,6 +43,64 @@ CHROME_UA = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
     "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
 )
+
+# ----------------------------------------------------------------------
+# 客户端绑定签名：把本机 ECDSA 密钥「借」给内嵌主页完成登录绑定
+# ----------------------------------------------------------------------
+# 主页（main/index.html）登录时会把 ``ensureClientKey()`` 生成的公钥随请求交给
+# auth-worker，服务端把 sid 写进 JWT。桌面端要享用同一套「令牌被偷也无法异地
+# 使用」的防护，就必须让登录注册的是**本机密钥** —— 而私钥在浏览器里是
+# ``extractable=false`` 的 CryptoKey，页面导不出、Python 也拿不到。
+#
+# 解法：DocumentCreation 阶段（早于一切页面脚本）覆写 ``crypto.subtle.generateKey``：
+# 主页调它时，返回由 Python 侧私钥 JWK **导入**成的一对 CryptoKey（私钥同样
+# ``extractable=false``，页面内的 XSS 也导不走）。于是：
+#   * 登录请求带上去的公钥 = 本机公钥 ⇒ sid 绑定本机会话；
+#   * 页面自己之后的签名请求也用这把私钥（行为与原生完全一致）；
+#   * Python 侧（client_sig.py）持有同一把私钥，可独立为聊天 / 鉴权请求签名。
+#
+# 降级：WebCrypto 不可用 / 注入失败时页面生成自己的密钥，登录照常成功，只是
+# 桌面端请求不带 X-Client-*（服务端对无 sid 令牌兼容放行），绝不会卡登录。
+_CLIENT_KEY_HOOK_TEMPLATE = """(function () {
+  if (window.__dtugClientKeyHook) return;
+  window.__dtugClientKeyHook = true;
+  window.__dtugClientKeyMode = 'init';
+  try {
+    var subtle = window.crypto && window.crypto.subtle;
+    if (!subtle || !subtle.importKey) { window.__dtugClientKeyMode = 'unsupported'; return; }
+    var PRIV = __PRIV_JWK__;
+    var PUB = __PUB_JWK__;
+    var origImport = subtle.importKey.bind(subtle);
+    var origGen = subtle.generateKey.bind(subtle);
+    subtle.generateKey = function (alg, extractable, usages) {
+      if (alg && alg.name === 'ECDSA') {
+        return origImport('jwk', PRIV, { name: 'ECDSA', namedCurve: 'P-256' }, false, ['sign'])
+          .then(function (priv) {
+            return origImport('jwk', PUB, { name: 'ECDSA', namedCurve: 'P-256' }, true, ['verify'])
+              .then(function (pub) {
+                window.__dtugClientKeyMode = 'bound';
+                return { privateKey: priv, publicKey: pub };
+              });
+          });
+      }
+      return origGen(alg, extractable, usages);
+    };
+  } catch (e) {
+    window.__dtugClientKeyMode = 'error';
+  }
+})();"""
+
+
+def build_client_key_hook_source() -> str:
+    """生成注入脚本源码（把本机公 / 私钥 JWK 内联进去）。"""
+    signer = default_signer()
+    priv = signer.private_jwk()
+    pub = signer.public_jwk()
+    # json.dumps 的输出是合法的 JS 对象字面量；内容仅含 base64url 字符与固定键名，
+    # 不存在引号 / 反斜杠注入面。
+    return _CLIENT_KEY_HOOK_TEMPLATE.replace(
+        "__PRIV_JWK__", json.dumps(priv)
+    ).replace("__PUB_JWK__", json.dumps(pub))
 
 
 def build_login_url() -> QUrl:
@@ -70,6 +130,19 @@ class _CallbackPage(QWebEnginePage):
         settings.setAttribute(QWebEngineSettings.WebAttribute.ScrollAnimatorEnabled, True)
         settings.setAttribute(QWebEngineSettings.WebAttribute.ErrorPageEnabled, True)
         # 允许第三方（challenges.cloudflare.com）加载 Turnstile 资源（默认即允许，显式保持开启）
+
+        # 客户端绑定签名注入（2026-10 新机制）：早于页面脚本覆写 generateKey，
+        # 使登录注册的是本机 ECDSA 密钥；失败则页面走自己的密钥（优雅降级）。
+        try:
+            script = QWebEngineScript()
+            script.setName("dtug-client-key-hook")
+            script.setSourceCode(build_client_key_hook_source())
+            script.setInjectionPoint(QWebEngineScript.InjectionPoint.DocumentCreation)
+            script.setWorldId(QWebEngineScript.MainWorld)
+            script.setRunsOnSubFrames(False)
+            self.scripts().insert(script)
+        except Exception:
+            pass
 
     def userAgentForUrl(self, url: QUrl) -> str:  # noqa: N802
         return CHROME_UA
@@ -152,9 +225,13 @@ class _CallbackServer(QThread):
 
 
 class _TokenValidateWorker(QThread):
-    """后台用 token 调 /me 校验并取回用户信息。"""
+    """后台用 token 调 /me 校验并取回用户信息。
 
-    done = pyqtSignal(bool, object)
+    done 信号第三参数为「最终采用的 token」——/me 滑动续签（剩余寿命不足 12h）
+    会下发新令牌，必须回传给对话框，否则 24h 后必掉线。
+    """
+
+    done = pyqtSignal(bool, object, str)
 
     def __init__(self, client: AuthClient, token: str) -> None:
         super().__init__()
@@ -164,9 +241,14 @@ class _TokenValidateWorker(QThread):
     def run(self) -> None:
         ok, me = self.client.get_me(self.token)
         if ok and isinstance(me, dict):
-            self.done.emit(True, me)
+            # /me 滑动续签可能下发新 token：优先采用（见 login_dialog 同款修复）
+            fresh = me.get("token")
+            if isinstance(fresh, str) and fresh:
+                self.token = fresh
+            user = {k: v for k, v in me.items() if k not in ("token", "token_refreshed")}
+            self.done.emit(True, user, self.token)
         else:
-            self.done.emit(False, None)
+            self.done.emit(False, None, self.token)
 
 
 class EmbeddedLoginDialog(QDialog):
@@ -259,10 +341,28 @@ class EmbeddedLoginDialog(QDialog):
         self.status.setText("已获取到 token，正在校验身份...")
         self.cancel_btn.setEnabled(False)
         self.refresh_btn.setEnabled(False)
+        self._bind_client_sid(token)
         self._worker = _TokenValidateWorker(self.client, token)
         self._worker.done.connect(self._on_validated)
         self._worker.finished.connect(self._worker.deleteLater)
         self._worker.start()
+
+    def _bind_client_sid(self, token: str) -> None:
+        """登录成功后确认「本机密钥是否被注册」：是则把该会话 sid 登记到本地
+        签名器（此后聊天 / 鉴权请求都带 X-Client-* 签名）；否则什么都不做
+        （该令牌 sid 属于页面自己的密钥，桌面端走兼容放行，绝不能乱签 ——
+        乱签会累积验签失败、触发服务端自动吊销会话）。"""
+
+        def _cb(mode: Any) -> None:
+            if str(mode) == "bound":
+                sid = token_sid(token)
+                if sid:
+                    default_signer().bind_sid(sid)
+
+        try:
+            self.page.runJavaScript("window.__dtugClientKeyMode || ''", _cb)
+        except Exception:
+            pass
 
     def done(self, r: int) -> None:
         """对话框退出（accept / reject / 关闭）时停止本地回调服务器，释放端口。"""
@@ -270,13 +370,15 @@ class EmbeddedLoginDialog(QDialog):
             self._server.stop()
         super().done(r)
 
-    def _on_validated(self, ok: bool, user: Optional[Dict[str, Any]]) -> None:
+    def _on_validated(self, ok: bool, user: Optional[Dict[str, Any]], token: str) -> None:
         if not ok or not isinstance(user, dict):
             self.status.setText("❌ token 校验失败，请重试或改用其他登录方式。")
             self.cancel_btn.setEnabled(True)
             self.refresh_btn.setEnabled(True)
             self._load()  # 重新加载登录页
             return
+        if token:
+            self._token = token  # 采用滑动续签后的新令牌
         user.setdefault("username", "")
         self.login_success.emit(self._token or "", user)
         self.accept()
